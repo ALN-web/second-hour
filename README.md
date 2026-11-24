@@ -179,9 +179,14 @@ frontend/              React app
 tests/                 pytest suite
 ```
 
-## Team
+## Team Alpha
 
-_Add team member names here._
+- **Anjankumar LN** (team leader)
+- Kanishka S
+- Gagandeep G
+- Deekshith K
+
+Ramaiah Institute of Technology · wHACKiest 2026 · Track 1
 
 ## Sources
 
