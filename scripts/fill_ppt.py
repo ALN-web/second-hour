@@ -23,6 +23,8 @@ LINE = RGBColor(0xD9, 0xD2, 0xC5)
 TINT = RGBColor(0xEE, 0xF1, 0xFA)
 FONT = "Calibri"
 
+SHOT = None  # set in main()
+
 TEAM = {"name": "Alpha", "id": "9fe3c6a4", "track": "Track 1: Make MCP Matter (AI Agents for Everyday Life)",
         "college": "", "members": ["Anjankumar LN", "Kanishka S", "Gagandeep G", "Deekshith K"],
         "usns": ["", "", "", ""]}
@@ -218,6 +220,12 @@ def cover(s):
     for i, u in enumerate(TEAM["usns"]):
         if u:
             append_value(usn, u, para=i)
+    # Project title block (top-right, above the clock artwork)
+    text_box(s, 9.05, 1.4, 3.9, 1.55, [
+        [("PROJECT", {"bold": True, "color": ORANGE, "size": 12})],
+        [("Second Hour", {"bold": True, "color": NAVY, "size": 32})],
+        [("MCP-powered case coordinator for families after a road accident", {"italic": True, "color": MUTED, "size": 13})],
+    ], name="Project title")
 
 
 def problem(s):
@@ -247,23 +255,33 @@ def solution(s):
     sub, lab, bl = ids(s)
     b = content_frame(s, "Second Hour: one shared case workspace and a proactive AI agent built on a real MCP server.",
                       "KEY FEATURES", lab, sub, bl)
-    b.width = Inches(6.6)
+    b.width = Inches(6.2)
+    b.height = Inches(2.6)
     fill_bullets(b, [
-        ("Case memory:", "one workspace per accident, shared by the whole family."),
-        ("Cited answers:", "PM-RAHAT questions answered only from official PIB/MoRTH text."),
-        ("Document vault:", "bills and reports auto-classified; fields stay “Needs review” until confirmed."),
-        ("Watchers:", "Day X of 7 and ₹ used vs ₹1.5 lakh; police-authentication follow-up alerts."),
-        ("Human approval:", "agent proposes tasks and reports; family approves and assigns."),
-        ("Case package:", "one-click PDF to share with hospital, insurer or lawyer."),
-        ("MVP today:", "9 MCP tools, live web app, tests. Next 24 hrs: voice, Kannada/Hindi, AWS."),
+        ("Case memory:", "one live workspace per accident, shared by the family."),
+        ("Cited answers:", "PM-RAHAT rules only from official PIB/MoRTH text."),
+        ("Document vault:", "fields auto-extracted, “Needs review” until confirmed."),
+        ("Watchers:", "Day X of 7, ₹ used vs ₹1.5 lakh, police follow-up."),
+        ("Agent proposes, family approves:", "tasks, assignments, reports."),
+        ("Case package:", "one-click PDF; ElevenLabs voice read-out."),
     ], size=1400)
-    text_box(s, 7.75, 2.42, 4.8, 0.3, [[("USER FLOW", {"bold": True, "color": BLUE, "size": 14})]])
-    steps = ["Create the case (incident, hospital)", "Upload bills and medical reports",
-             "Agent checks rules, flags alerts", "Family approves and assigns tasks", "Share the PDF case package"]
+    if SHOT and SHOT.exists():
+        pic = s.shapes.add_picture(str(SHOT), Inches(7.65), Inches(2.45), width=Inches(4.9))
+        pic.name = "Screenshot: live case dashboard"
+        pic._element.nvPicPr.cNvPr.set("descr", "Second Hour dashboard: two watcher alerts, Day 3 of 7, Rs 1,24,000 of Rs 1,50,000 confirmed")
+        pic.line.color.rgb = LINE
+        pic.line.width = Pt(1)
+        text_box(s, 7.65, 2.45 + pic.height / 914400 + 0.06, 4.9, 0.25,
+                 [[("Working MVP: live case dashboard with two watcher alerts (synthetic data)", {"italic": True, "size": 10, "color": MUTED})]])
+    text_box(s, 0.7, 5.62, 3.0, 0.3, [[("USER FLOW", {"bold": True, "color": BLUE, "size": 13})]])
+    steps = ["Create case", "Upload bills", "Agent alerts", "Family approves", "Share PDF"]
+    x = 0.7
     for i, st in enumerate(steps):
-        y = 2.85 + i * 0.5
-        circle_num(s, 7.75, y, 0.36, i + 1, fill=ORANGE if i == 2 else NAVY)
-        text_box(s, 8.25, y, 4.3, 0.36, [[(st, {"size": 13})]], anchor=MSO_ANCHOR.MIDDLE)
+        circle_num(s, x, 5.98, 0.34, i + 1, fill=ORANGE if i == 2 else NAVY)
+        text_box(s, x + 0.42, 5.98, 1.2, 0.34, [[(st, {"size": 12})]], anchor=MSO_ANCHOR.MIDDLE)
+        if i < len(steps) - 1:
+            arrow(s, x + 1.55, 6.15, x + 1.8, 6.15, color=MUTED, width=1.25)
+        x += 1.88
 
 
 def tech(s):
@@ -425,7 +443,27 @@ def footer(prs):
                         r.text = r.text.replace("<Team Name>", TEAM["name"]).replace("<Team ID>", TEAM["id"])
 
 
+NOTES = [
+    "Hello judges, we are Team Alpha. Our project is Second Hour, an MCP-powered case coordinator for Indian families after a road accident. The first hour belongs to the doctors; the second hour belongs to the family.",
+    "After an accident, families juggle the PM-RAHAT scheme, hospital desks, police follow-ups and documents. PM-RAHAT covers up to 1.5 lakh rupees for 7 days from the accident, yet 3,674 victims were discharged after no police response within the prescribed timelines (PIB, 12 August 2026). Families cannot see either clock.",
+    "Second Hour gives the family one shared workspace and an agent that remembers the case, answers only from official sources with citations, reads bills with every field marked Needs review, runs two deterministic watchers, and only proposes actions that a family member approves. The screenshot is our working MVP.",
+    "We chose proven tools: React and Tailwind for a calm mobile-first UI, FastAPI and Claude for the agent, the official MCP Python SDK v2 over Streamable HTTP, PyMuPDF and ReportLab for documents, BM25 for citable retrieval, SQLite for zero-setup data, and ElevenLabs for voice. AWS deployment is next.",
+    "Every action flows through the MCP server. The agent host discovers tools live, converts them to Claude tool definitions, runs read-only tools immediately and turns writes into approval cards, decided by MCP tool annotations. A second host like MCP Inspector reads the same live case.",
+    "Our USP: MCP-native and portable, deterministic watchers instead of LLM guesses, and safety by design. Compared with generic chatbots and helplines, only Second Hour remembers the case, cites official sources, alerts proactively and requires approval.",
+    "Impact: fewer missed police follow-ups, earlier billing conversations and complete paperwork. Feasibility: the MVP already runs end to end with 9 passing tests. Risks such as wrong rules, bad extraction, over-reliance and privacy each have a concrete mitigation.",
+    "Free for families, always. Hospitals and TPAs license it per active case; insurers and CSR programmes sponsor it. We pilot at Bengaluru designated hospitals with a QR code at the emergency desk, then add languages, more schemes and partner agents through MCP. Thank you.",
+]
+
+
+def add_notes(prs):
+    for slide, text in zip(prs.slides, NOTES):
+        slide.notes_slide.notes_text_frame.text = text
+
+
 def main(src, dst):
+    global SHOT
+    from pathlib import Path
+    SHOT = Path(__file__).resolve().parent.parent / "docs" / "screenshots" / "dashboard_16x10.png"
     prs = Presentation(src)
     sl = prs.slides
     footer(prs)
@@ -437,6 +475,7 @@ def main(src, dst):
     novelty(sl[5])
     impact(sl[6])
     business(sl[7])
+    add_notes(prs)
     prs.save(dst)
     print("saved", dst)
 
