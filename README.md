@@ -300,6 +300,8 @@ The current state and known limitations are in [IMPLEMENTATION_STATUS.md](IMPLEM
 | | **Gagandeep G** | Member |
 | | **Deekshith K** | Member |
 
+**Dayananda Sagar Academy of Technology and Management (DSATM), Bengaluru**
+
 Built for **wHACKiest 2026** · Track 1: *Make MCP Matter: AI Agents for Everyday Life*
 
 ## 📚 Sources

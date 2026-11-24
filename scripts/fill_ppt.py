@@ -26,8 +26,8 @@ FONT = "Calibri"
 SHOT = None  # set in main()
 
 TEAM = {"name": "Alpha", "id": "9fe3c6a4", "track": "Track 1: Make MCP Matter (AI Agents for Everyday Life)",
-        "college": "", "members": ["Anjankumar LN", "Kanishka S", "Gagandeep G", "Deekshith K"],
-        "usns": ["", "", "", ""]}
+        "college": "Dayananda Sagar Academy of Technology and Management", "members": ["Anjankumar LN", "Kanishka S", "Gagandeep G", "Deekshith K"],
+        "usns": ["1DT24IS010", "1DT24CG017", "1DT24IS037", "1DT24IS033"]}
 
 
 # ------------------------------------------------------------------ helpers
@@ -48,7 +48,7 @@ def set_first_run(shape, text):
         extra._p.getparent().remove(extra._p)
 
 
-def append_value(shape, value, para=0):
+def append_value(shape, value, para=0, size=None):
     """Append a value run after a label like 'TEAM NAME:' keeping the label run's font."""
     p = shape.text_frame.paragraphs[para]
     label = p.runs[0]
@@ -56,6 +56,8 @@ def append_value(shape, value, para=0):
     r.find(qn("a:t")).text = "  " + value
     rpr = r.find(qn("a:rPr"))
     rpr.set("b", "0")
+    if size:
+        rpr.set("sz", str(size))
     label._r.addnext(r)
 
 
@@ -210,7 +212,7 @@ def cover(s):
     by = {sh.text_frame.text.strip(): sh for sh in s.shapes if sh.has_text_frame}
     append_value(by["TEAM NAME:"], TEAM["name"])
     if TEAM["college"]:
-        append_value(by["COLLEGE NAME:"], TEAM["college"])
+        append_value(by["COLLEGE NAME:"], TEAM["college"], size=1150)
     append_value(by["TRACK:"], TEAM["track"])
     append_value(by["TEAM ID:"], TEAM["id"])
     mem = next(sh for sh in s.shapes if sh.has_text_frame and sh.text_frame.text.startswith("Member 1"))
