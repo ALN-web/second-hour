@@ -205,8 +205,8 @@ async def _offline_turn(client, case_id, user_id, text, new_alerts, citations, a
         parts.append("New alert(s): " + "; ".join(a["title"] for a in new_alerts) + ".")
     low = text.lower()
     tools = {t.name: t for t in (await client.list_tools()).tools}
-    if re.search(r"\b(task|remind|follow ?up)\b", low) and new_alerts:
-        a = new_alerts[0]["suggested_task"]
+    if re.search(r"\b(task|remind|follow ?up)\b", low) and alerts:
+        a = alerts[0]["suggested_task"]
         args = M.inject_args(tools["create_followup_task"], {"title": a["title"], "priority": a["priority"]}, user_id, case_id)
         actions.append(propose(case_id, user_id, "create_followup_task", args, user_names))
         parts.append("I've proposed a follow-up task. Please review and click Approve.")
