@@ -14,6 +14,7 @@ _Last updated: 24 Nov 2026_
 - **Tasks**: create (approval), assign (membership-checked) and mark done. There is a timeline of all events.
 - **PDF case package** via ReportLab, downloadable only by members.
 - **UI**: login (Priya/Arjun), case list and create, dashboard, agent chat with citations and approval cards, document vault, tasks and timeline, report, and an MCP panel with a live activity log. It has a persistent 112 banner.
+- **ElevenLabs voice**: `/api/tts` proxies the ElevenLabs text-to-speech API (the key stays server-side), and a Listen button appears on agent replies. Not tested live: no key was available during the build.
 - **Offline mode**: without `ANTHROPIC_API_KEY`, a deterministic agent still goes through MCP.
 - **Tests** (9): MCP discovery and calls through an in-process MCP client, permissions, the due-date rule, both watchers including the 48h case, and RAG citations and refusal.
 - One-command start (`start.sh`, `start.ps1`), `.env.example` and a seed script with synthetic PDFs.

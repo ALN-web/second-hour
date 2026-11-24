@@ -153,6 +153,42 @@ export function Dashboard({ caseId, tick, refresh, goChat }: { caseId: string; t
   )
 }
 
+/* ------------------------------------------------------------------ voice (ElevenLabs) */
+
+let ttsEnabled: Promise<boolean> | null = null
+function useTts() {
+  const [on, setOn] = useState(false)
+  useEffect(() => {
+    ttsEnabled ??= api<{ tts: boolean }>('/api/config').then(c => c.tts).catch(() => false)
+    ttsEnabled.then(setOn)
+  }, [])
+  return on
+}
+
+function ListenButton({ text }: { text: string }) {
+  const [state, setState] = useState<'idle' | 'loading' | 'playing' | 'error'>('idle')
+  const audio = useRef<HTMLAudioElement | null>(null)
+  const play = async () => {
+    if (state === 'playing') { audio.current?.pause(); setState('idle'); return }
+    setState('loading')
+    try {
+      const res = await fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-Id': getUser() }, body: JSON.stringify({ text }) })
+      if (!res.ok) throw new Error()
+      const url = URL.createObjectURL(await res.blob())
+      audio.current = new Audio(url)
+      audio.current.onended = () => setState('idle')
+      await audio.current.play()
+      setState('playing')
+    } catch { setState('error') }
+  }
+  return (
+    <button onClick={play} className="chip bg-white border border-slate-300 text-slate-700 hover:border-navy-700 py-1" aria-label="Read this reply aloud">
+      {state === 'loading' ? 'Loading voice…' : state === 'playing' ? '■ Stop' : state === 'error' ? 'Voice unavailable' : '▶ Listen'}
+      <span className="text-[10px] text-slate-400 ml-1">ElevenLabs</span>
+    </button>
+  )
+}
+
 /* ------------------------------------------------------------------ chat */
 
 const SUGGESTIONS = [
@@ -169,6 +205,7 @@ export function Chat({ caseId, refresh }: { caseId: string; refresh: () => void 
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const end = useRef<HTMLDivElement>(null)
+  const tts = useTts()
   const load = useCallback(() => { api<any[]>(`/api/cases/${caseId}/chat`).then(setMsgs) }, [caseId])
   useEffect(load, [load])
   useEffect(() => { end.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs, busy])
@@ -192,6 +229,7 @@ export function Chat({ caseId, refresh }: { caseId: string; refresh: () => void 
               {m.role === 'user' && m.user && <div className="text-[10px] text-slate-300">{m.user}</div>}
               {m.new_alerts?.length > 0 && <div className="text-xs chip bg-orange-100 text-orange-800">{m.new_alerts.length} new watcher alert(s)</div>}
               <Md text={m.content} />
+              {tts && m.role === 'assistant' && <ListenButton text={m.content} />}
               {m.citations?.length > 0 && (
                 <div className="border-t border-slate-100 pt-2 space-y-1">
                   <div className="text-xs font-semibold text-slate-500">Sources</div>

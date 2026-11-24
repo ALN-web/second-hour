@@ -26,6 +26,7 @@ PM-RAHAT gives cashless treatment up to **₹1.5 lakh per victim for up to 7 day
   2. **Police authentication watcher.** Alerts if the family-entered status stays "requested by hospital" for more than 24h (48h if life-threatening). It is clearly labelled as **the hospital's and police's clock, not the family's**.
 - **Human-approved actions.** The agent only *proposes* tasks, assignments and reports. They run after a family member clicks **Approve**.
 - **A PDF case package** with the summary, timeline, document index (with SHA-256 hashes), fields, missing items, alerts and a "not legal advice" notice.
+- **Voice (ElevenLabs).** A **▶ Listen** button reads agent replies aloud with the multilingual model (English, Hindi, Kannada). It appears when `ELEVENLABS_API_KEY` is set.
 - **The MCP panel** shows the live server connection, the discovered tools, resources and prompts, and an audit log of every tool call.
 
 ## Architecture
@@ -139,6 +140,8 @@ Choose **Transport: Streamable HTTP** and **URL: `http://localhost:8001/mcp`**, 
 
 ## Demo script (about 3 minutes)
 
+The full narrated pitch is in [VIDEO_SCRIPT.md](VIDEO_SCRIPT.md).
+
 1. `python -m scripts.seed`, then start. **Log in as Priya** and open case **SH-2026-0001** (Ravi K, Bengaluru, incident yesterday at 9:30 PM).
 2. **Documents.** Upload `demo_assets/sample_hospital_bill.pdf` and `sample_medical_report.pdf`. They are classified and their fields extracted, all marked *Needs review*. Confirm **total amount ₹1,24,000**.
 3. **Dashboard.** The cover tracker shows ₹1,24,000 of ₹1,50,000 (83%), and a **watcher alert** appears. Click **Propose task**, then **Approve**. `create_followup_task` runs through MCP.
@@ -162,7 +165,7 @@ Choose **Transport: Streamable HTTP** and **URL: `http://localhost:8001/mcp`**, 
 
 ## Tech stack
 
-Python 3.11+ · MCP Python SDK v2 (`mcp` 2.3, `MCPServer`, Streamable HTTP, `mcp.Client`) · FastAPI · SQLAlchemy + SQLite · Anthropic Claude (`LLM_MODEL`) · PyMuPDF · ReportLab · rank-bm25 · React 19 + TypeScript + Vite + Tailwind CSS v4.
+Python 3.11+ · ElevenLabs TTS (`eleven_multilingual_v2`) · MCP Python SDK v2 (`mcp` 2.3, `MCPServer`, Streamable HTTP, `mcp.Client`) · FastAPI · SQLAlchemy + SQLite · Anthropic Claude (`LLM_MODEL`) · PyMuPDF · ReportLab · rank-bm25 · React 19 + TypeScript + Vite + Tailwind CSS v4.
 
 ## Repository map
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -76,7 +76,7 @@ async def health():
     try:
         info = await M.discover()
         return {"ok": True, "mcp": True, "llm": bool(config.ANTHROPIC_API_KEY), "model": config.LLM_MODEL,
-                "tools": len(info["tools"])}
+                "tts": bool(config.ELEVENLABS_API_KEY), "tools": len(info["tools"])}
     except Exception as e:  # noqa: BLE001
         return {"ok": True, "mcp": False, "llm": bool(config.ANTHROPIC_API_KEY), "error": str(e)[:200]}
 
@@ -323,6 +323,40 @@ def download_report(case_id: str, report_id: str, uid: str = "", x_user_id: str 
     if not r or r.case_id != case_id:
         raise HTTPException(404, "Report not found")
     return FileResponse(r.path, media_type="application/pdf", filename=Path(r.path).name)
+
+
+# ------------------------------------------------------------------ voice (ElevenLabs)
+
+class TTSIn(BaseModel):
+    text: str
+
+
+@app.post("/api/tts")
+async def tts(body: TTSIn, user: User = Depends(current_user)):
+    """Read an agent reply aloud with ElevenLabs (multilingual: English, Hindi, Kannada)."""
+    if not config.ELEVENLABS_API_KEY:
+        raise HTTPException(503, "Voice is not configured (set ELEVENLABS_API_KEY)")
+    import re as _re
+
+    import httpx
+
+    text = _re.sub(r"\[(\d+)\]|[*_`#]", "", body.text)[:2500].strip()
+    if not text:
+        raise HTTPException(400, "Nothing to read")
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{config.ELEVENLABS_VOICE_ID}",
+            headers={"xi-api-key": config.ELEVENLABS_API_KEY, "accept": "audio/mpeg"},
+            json={"text": text, "model_id": config.ELEVENLABS_MODEL},
+        )
+    if r.status_code != 200:
+        raise HTTPException(502, f"ElevenLabs error {r.status_code}: {r.text[:200]}")
+    return Response(content=r.content, media_type="audio/mpeg")
+
+
+@app.get("/api/config")
+def ui_config():
+    return {"tts": bool(config.ELEVENLABS_API_KEY), "llm": bool(config.ANTHROPIC_API_KEY)}
 
 
 # ------------------------------------------------------------------ MCP panel
