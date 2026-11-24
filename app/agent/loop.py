@@ -136,6 +136,8 @@ async def run_turn(case_id: str, user_id: str, user_name: str, text: str) -> dic
                                    snapshot=json.dumps(snap, ensure_ascii=False, default=str), alert_note=alert_note)
             llm_tools = [M.to_llm_tool(t) for t in mcp_tools.values()]
             messages = history + [{"role": "user", "content": text}]
+            if len(messages) >= 2 and messages[-2]["role"] == "user":  # e.g. previous turn failed
+                messages[-2:] = [{"role": "user", "content": messages[-2]["content"] + "\n\n" + text}]
             reply = ""
             for _ in range(MAX_STEPS):
                 resp = await llm.complete(system, messages, llm_tools)
