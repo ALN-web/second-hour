@@ -67,6 +67,9 @@ def summarize(payload: Any, is_error: bool = False) -> str:
         return f"ERROR: {str(payload.get('text', payload))[:300]}" if isinstance(payload, dict) else f"ERROR: {payload}"
     if isinstance(payload, dict):
         keys = list(payload)[:6]
+        if "case_number" in payload and "milestones" in payload:
+            cw = payload["milestones"]["cover_window"]
+            return f"{payload['case_number']}: day {cw['day']} of {cw['of']}, {len(payload.get('alerts', []))} alert(s)"
         if "alerts" in payload:
             return f"{len(payload['alerts'])} alert(s)"
         if "results" in payload:

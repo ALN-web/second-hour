@@ -205,10 +205,11 @@ export function Chat({ caseId, refresh }: { caseId: string; refresh: () => void 
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const end = useRef<HTMLDivElement>(null)
+  const box = useRef<HTMLDivElement>(null)
   const tts = useTts()
   const load = useCallback(() => { api<any[]>(`/api/cases/${caseId}/chat`).then(setMsgs) }, [caseId])
   useEffect(load, [load])
-  useEffect(() => { end.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs, busy])
+  useEffect(() => { const b = box.current; if (b) b.scrollTo({ top: b.scrollHeight, behavior: 'smooth' }) }, [msgs, busy])
 
   const send = async (m: string) => {
     if (!m.trim()) return
@@ -221,12 +222,13 @@ export function Chat({ caseId, refresh }: { caseId: string; refresh: () => void 
   return (
     <div className="flex flex-col h-[calc(100vh-190px)] min-h-[420px]">
       <div className="flex items-center gap-2 mb-2 text-xs"><span className="chip bg-navy-800 text-white">Case context loaded</span><span className="text-slate-500">Tools discovered live from the MCP server · write actions need your approval</span></div>
-      <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+      <div ref={box} className="flex-1 overflow-y-auto space-y-3 pr-1">
         {msgs.length === 0 && <div className="card text-sm text-slate-600">Ask about PM-RAHAT, your documents or next steps. Answers about the scheme come only from official sources, with citations.</div>}
         {msgs.map((m, i) => (
           <div key={m.id + '-' + i} className={m.role === 'user' ? 'flex justify-end' : ''}>
             <div className={m.role === 'user' ? 'max-w-[85%] rounded-2xl rounded-br-sm bg-navy-800 text-white px-4 py-2' : 'max-w-[95%] card space-y-2'}>
               {m.role === 'user' && m.user && <div className="text-[10px] text-slate-300">{m.user}</div>}
+              {m.role === 'assistant' && m.mode === 'offline' && <span className="chip bg-slate-100 text-slate-500 mr-1" title="No ANTHROPIC_API_KEY set: deterministic agent, still via MCP">offline agent</span>}
               {m.new_alerts?.length > 0 && <div className="text-xs chip bg-orange-100 text-orange-800">{m.new_alerts.length} new watcher alert(s)</div>}
               <Md text={m.content} />
               {tts && m.role === 'assistant' && <ListenButton text={m.content} />}

@@ -99,8 +99,21 @@ export default function App() {
   const refresh = () => setTick(t => t + 1)
 
   useEffect(() => {
+    // Deep link for demos: ?as=u_priya&case=case_demo&tab=chat
+    const q = new URLSearchParams(location.search)
+    if (q.get('as')) setUser(q.get('as')!)
     const id = getUser()
-    if (id) api<User[]>('/api/users').then(us => { const u = us.find(x => x.user_id === id); if (u) setU(u) }).catch(() => {})
+    if (!id) return
+    api<User[]>('/api/users').then(us => {
+      const u = us.find(x => x.user_id === id)
+      if (!u) return
+      setU(u)
+      const want = q.get('case')
+      if (want) api<CaseRow[]>('/api/cases').then(cs => {
+        const c = cs.find(x => x.case_id === want)
+        if (c) { setKase(c); const t = q.get('tab'); if (t && TABS.some(x => x.id === t)) setTab(t as Tab) }
+      })
+    }).catch(() => {})
   }, [])
 
   const logout = () => { setUser(''); setU(null); setKase(null) }

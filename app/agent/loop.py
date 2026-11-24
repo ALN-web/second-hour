@@ -174,6 +174,7 @@ async def run_turn(case_id: str, user_id: str, user_name: str, text: str) -> dic
 
     reply = reply.strip()
     meta = {"citations": citations, "actions": actions, "tool_trace": tool_trace,
+            "mode": "claude" if get_llm() is not None else "offline",
             "alerts_mentioned": [a["id"] for a in new_alerts], "new_alerts": new_alerts}
     db = SessionLocal()
     try:
@@ -224,11 +225,10 @@ async def _offline_turn(client, case_id, user_id, text, new_alerts, citations, a
         out, _ = await M.call_logged(client, "search_pmrahat_guidance", {"question": text}, case_id, user_id, "auto_read_only")
         tool_trace.append({"tool": "search_pmrahat_guidance", "state": "auto_read_only"})
         if out.get("found"):
-            citations.extend(_collect_citations(out, citations))
+            citations.extend(_collect_citations({"results": out["results"][:1]}, citations))
             parts.append("From the official sources: " + " ".join(f"{r['snippet']} [{i + 1}]" for i, r in enumerate(out["results"][:1])))
         else:
             parts.append("I could not find this in the curated official PM-RAHAT sources. Please ask the hospital desk.")
-    parts.append("_(Offline mode: no ANTHROPIC_API_KEY set.)_")
     return "\n\n".join(parts)
 
 
