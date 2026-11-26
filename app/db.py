@@ -305,5 +305,28 @@ class CentralDocument(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class Conversation(Base):
+    __tablename__ = "conversations"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("conv"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    title: Mapped[str] = mapped_column(String, default="New Conversation")
+    is_pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    context_metadata: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ConversationMessage(Base):
+    __tablename__ = "conversation_messages"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("cmsg"))
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
+    sender: Mapped[str] = mapped_column(String)  # user | assistant
+    content: Mapped[str] = mapped_column(Text)
+    citations_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    action_cards_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suggested_followups_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 def init_db() -> None:
     Base.metadata.create_all(engine)

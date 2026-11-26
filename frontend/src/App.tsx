@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, getUser, setUser } from './api'
-import { Chat, McpTicker } from './Views'
+import { McpTicker } from './Views'
 import { Navbar, type NavItem } from './components/Navbar'
 import { Homepage } from './components/Homepage'
 import { ReportAccidentModal, ProfileModal, NotificationsModal } from './components/Modals'
@@ -14,6 +14,7 @@ import { EditDocumentModal } from './documents/EditDocumentModal'
 import { ReplaceFileModal } from './documents/ReplaceFileModal'
 import { CasesOverview } from './cases/CasesOverview'
 import { CaseWorkspace } from './cases/CaseWorkspace'
+import { AssistantModule } from './assistant/AssistantModule'
 import type { VehicleSummary, VehicleDetail, VehicleFormData } from './vehicles/types'
 import type { DocumentItem, DocumentSummary, UploadDocumentFormData } from './documents/types'
 
@@ -153,6 +154,12 @@ export default function App() {
     }
   }, [])
 
+  // Navigation helpers for AI Assistant module
+  const navigateToAIAssistant = useCallback(() => {
+    setActiveNav('ai-assistant')
+    window.history.pushState({}, '', '/ai-assistant')
+  }, [])
+
   const navigateToHome = useCallback(() => {
     setActiveNav('home')
     setVehicleSubView('overview')
@@ -215,6 +222,8 @@ export default function App() {
         setCaseSubView('overview')
         setSelectedCaseId(null)
       }
+    } else if (path.startsWith('/ai-assistant') || viewParam === 'ai-assistant') {
+      setActiveNav('ai-assistant')
     } else if (path === '/' && !viewParam) {
       setActiveNav('home')
     }
@@ -269,21 +278,6 @@ export default function App() {
     }
   }, [user, loadVehicles, loadDocuments])
 
-  // Helper to ensure an active case exists before navigating to case views
-  const ensureCaseAndNavigate = async (tab: CaseTab, navId: NavItem) => {
-    if (!kase) {
-      try {
-        const cs = await api<CaseRow[]>('/api/cases')
-        if (cs && cs.length > 0) {
-          setKase(cs[0])
-        }
-      } catch (e) {
-        console.error(e)
-      }
-    }
-    setCaseTab(tab)
-    setActiveNav(navId)
-  }
 
   const handleNav = (nav: NavItem) => {
     if (nav === 'home') {
@@ -295,7 +289,7 @@ export default function App() {
     } else if (nav === 'cases') {
       navigateToCases('overview')
     } else if (nav === 'ai-assistant') {
-      ensureCaseAndNavigate('chat', 'ai-assistant')
+      navigateToAIAssistant()
     } else if (nav === 'profile') {
       setProfileModalOpen(true)
     }
@@ -643,7 +637,7 @@ export default function App() {
             onOpenVehicles={() => navigateToVehicles('overview')}
             onOpenDocuments={() => navigateToDocuments('dashboard')}
             onOpenCases={() => navigateToCases('overview')}
-            onOpenAI={() => ensureCaseAndNavigate('chat', 'ai-assistant')}
+            onOpenAI={navigateToAIAssistant}
             onOpenProfile={() => setProfileModalOpen(true)}
             onDemoStaged={handleDemoStaged}
           />
@@ -757,11 +751,15 @@ export default function App() {
           </>
         )}
 
-        {/* VIEW 5: Legacy Agent / AI Assistant View */}
-        {activeNav === 'ai-assistant' && isCaseView && (
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
-            <Chat caseId={kase.case_id} refresh={refresh} />
-          </div>
+        {/* VIEW 5: Ask Second Hour AI Assistant */}
+        {activeNav === 'ai-assistant' && (
+          <AssistantModule
+            user={user}
+            onNavigateToVehicles={(vId) => navigateToVehicles(vId ? 'detail' : 'overview', vId)}
+            onNavigateToDocuments={() => navigateToDocuments('dashboard')}
+            onNavigateToCases={(caseId) => navigateToCases(caseId ? 'workspace' : 'overview', caseId)}
+            onBackHome={navigateToHome}
+          />
         )}
       </main>
 

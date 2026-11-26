@@ -24,6 +24,7 @@ from app.services import cases as case_svc
 from app.services import central_documents as central_docs_svc
 from app.services import documents as doc_svc
 from app.services import vehicles as veh_svc
+from app.services import assistant as asst_svc
 from app.services.common import PermissionDenied, ServiceError, iso, require_member
 
 app = FastAPI(title="Second Hour agent host")
@@ -846,6 +847,67 @@ def get_document_file_endpoint(
         filename=filename,
         content_disposition_type="attachment" if download else "inline",
     )
+
+
+# ------------------------------------------------------------------ Ask Second Hour AI Assistant
+
+class CreateConversationPayload(BaseModel):
+    title: str | None = None
+
+
+class PinConversationPayload(BaseModel):
+    pinned: bool
+
+
+class AssistantMessagePayload(BaseModel):
+    content: str
+
+
+class AssistantActionPayload(BaseModel):
+    action_type: str
+    payload: dict = {}
+
+
+@app.get("/api/ai/conversations")
+def list_ai_conversations(user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.list_conversations(db, user.id)
+
+
+@app.post("/api/ai/conversations")
+def create_ai_conversation(body: CreateConversationPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.create_conversation(db, user.id, body.title)
+
+
+@app.get("/api/ai/conversations/{conv_id}")
+def get_ai_conversation(conv_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.get_conversation(db, user.id, conv_id)
+
+
+@app.delete("/api/ai/conversations/{conv_id}")
+def delete_ai_conversation(conv_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    asst_svc.delete_conversation(db, user.id, conv_id)
+    return {"ok": True}
+
+
+@app.delete("/api/ai/conversations")
+def clear_ai_conversations(user: User = Depends(current_user), db=Depends(get_db)):
+    cnt = asst_svc.clear_conversations(db, user.id)
+    return {"ok": True, "cleared_count": cnt}
+
+
+@app.patch("/api/ai/conversations/{conv_id}/pin")
+def pin_ai_conversation(conv_id: str, body: PinConversationPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.pin_conversation(db, user.id, conv_id, body.pinned)
+
+
+@app.post("/api/ai/conversations/{conv_id}/messages")
+def send_ai_message(conv_id: str, body: AssistantMessagePayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.post_user_message(db, user.id, conv_id, body.content)
+
+
+@app.post("/api/ai/actions/execute")
+def execute_ai_action(body: AssistantActionPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.execute_assistant_action(db, user.id, body.action_type, body.payload)
 
 
 # ------------------------------------------------------------------ MCP panel
