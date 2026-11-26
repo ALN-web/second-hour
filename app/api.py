@@ -6,9 +6,10 @@ Every route still checks case membership server-side.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -20,6 +21,7 @@ from app.agent import loop as agent
 from app.agent import mcp_client as M
 from app.db import AuditLog, ChatMessage, PendingAction, Report, SessionLocal, User, init_db
 from app.services import cases as case_svc
+from app.services import central_documents as central_docs_svc
 from app.services import documents as doc_svc
 from app.services import vehicles as veh_svc
 from app.services.common import PermissionDenied, ServiceError, iso, require_member
@@ -552,6 +554,152 @@ async def stage_demo(fresh: bool = False):
     finally:
         db.close()
     return {"staged": True, "case_id": cid}
+
+
+# ------------------------------------------------------------------ centralized documents module
+
+class DocumentUpdatePayload(BaseModel):
+    document_name: str | None = None
+    category: str | None = None
+    document_type: str | None = None
+    document_number: str | None = None
+    issuing_authority: str | None = None
+    issue_date: str | None = None
+    expiry_date: str | None = None
+    notes: str | None = None
+    resource_type: str | None = None
+    resource_id: str | None = None
+
+
+@app.get("/api/documents")
+def list_documents_endpoint(
+    category: str = Query(default="all"),
+    status: str = Query(default="all"),
+    vehicle_id: str = Query(default="all"),
+    case_id: str = Query(default="all"),
+    search: str = Query(default=""),
+    sort_by: str = Query(default="uploaded_at"),
+    sort_dir: str = Query(default="desc"),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return central_docs_svc.list_documents(
+        db, user.id, category, status, vehicle_id, case_id, search, sort_by, sort_dir
+    )
+
+
+@app.get("/api/documents/summary")
+def document_summary_endpoint(
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return central_docs_svc.get_document_summary(db, user.id)
+
+
+@app.get("/api/documents/{doc_id}")
+def get_document_endpoint(
+    doc_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return central_docs_svc.get_document(db, user.id, doc_id)
+
+
+@app.post("/api/documents")
+async def create_document_endpoint(
+    file: UploadFile = File(...),
+    document_name: str = Form(default=""),
+    category: str = Form(default="personal"),
+    document_type: str = Form(default="other"),
+    document_number: str = Form(default=""),
+    issuing_authority: str = Form(default=""),
+    issue_date: str = Form(default=""),
+    expiry_date: str = Form(default=""),
+    resource_type: str = Form(default="USER"),
+    resource_id: str = Form(default=""),
+    notes: str = Form(default=""),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    content = await file.read()
+    iss_dt = None
+    if issue_date:
+        try:
+            iss_dt = datetime.fromisoformat(issue_date.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            pass
+    exp_dt = None
+    if expiry_date:
+        try:
+            exp_dt = datetime.fromisoformat(expiry_date.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            pass
+
+    return central_docs_svc.create_document(
+        db=db,
+        user_id=user.id,
+        document_name=document_name or (file.filename or "Document"),
+        category=category,
+        document_type=document_type,
+        file_name=file.filename or "document.pdf",
+        content=content,
+        document_number=document_number or None,
+        issuing_authority=issuing_authority or None,
+        issue_date=iss_dt,
+        expiry_date=exp_dt,
+        notes=notes or None,
+        resource_type=resource_type,
+        resource_id=resource_id or None,
+    )
+
+
+@app.patch("/api/documents/{doc_id}")
+@app.put("/api/documents/{doc_id}")
+def update_document_endpoint(
+    doc_id: str,
+    payload: DocumentUpdatePayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return central_docs_svc.update_document(db, user.id, doc_id, payload.model_dump(exclude_unset=True))
+
+
+@app.post("/api/documents/{doc_id}/replace")
+async def replace_document_file_endpoint(
+    doc_id: str,
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    content = await file.read()
+    return central_docs_svc.replace_document_file(db, user.id, doc_id, file.filename or "document.pdf", content)
+
+
+@app.delete("/api/documents/{doc_id}")
+def delete_document_endpoint(
+    doc_id: str,
+    hard: bool = Query(default=False),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    central_docs_svc.delete_document(db, user.id, doc_id, hard=hard)
+    return {"ok": True}
+
+
+@app.get("/api/documents/{doc_id}/file")
+def get_document_file_endpoint(
+    doc_id: str,
+    download: bool = Query(default=False),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    path, mime, filename = central_docs_svc.get_document_file(db, user.id, doc_id)
+    return FileResponse(
+        path,
+        media_type=mime,
+        filename=filename,
+        content_disposition_type="attachment" if download else "inline",
+    )
 
 
 # ------------------------------------------------------------------ MCP panel

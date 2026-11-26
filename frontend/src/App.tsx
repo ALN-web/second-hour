@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, getUser, setUser, fmtTime } from './api'
-import { Dashboard, Chat, Documents, Tasks, ReportView, McpPanel, McpTicker } from './Views'
+import { Dashboard, Chat, Documents as CaseDocuments, Tasks, ReportView, McpPanel, McpTicker } from './Views'
 import { Navbar, type NavItem } from './components/Navbar'
 import { Homepage } from './components/Homepage'
 import { ReportAccidentModal, ProfileModal, NotificationsModal } from './components/Modals'
 import { VehiclesOverview } from './vehicles/VehiclesOverview'
 import { VehicleDetails } from './vehicles/VehicleDetails'
 import { AddVehicleWizard } from './vehicles/AddVehicleWizard'
+import { DocumentsDashboard } from './documents/DocumentsDashboard'
+import { UploadDocumentWizard } from './documents/UploadDocumentWizard'
+import { DocumentViewerModal } from './documents/DocumentViewerModal'
+import { EditDocumentModal } from './documents/EditDocumentModal'
+import { ReplaceFileModal } from './documents/ReplaceFileModal'
 import type { VehicleSummary, VehicleDetail, VehicleFormData } from './vehicles/types'
+import type { DocumentItem, DocumentSummary, UploadDocumentFormData } from './documents/types'
 
 type User = { user_id: string; name: string; role_label: string }
 type CaseRow = { case_id: string; case_number: string; victim_display_name?: string; hospital_name?: string; incident_at: string }
@@ -85,6 +91,7 @@ function CaseList({ user, onOpen, onNew }: { user: User; onOpen: (c: CaseRow) =>
 export default function App() {
   const [user, setU] = useState<User | null>(null)
   const [kase, setKase] = useState<CaseRow | null>(null)
+  const [caseRows, setCaseRows] = useState<CaseRow[]>([])
   const [activeNav, setActiveNav] = useState<NavItem>('home')
   const [caseTab, setCaseTab] = useState<CaseTab>('dashboard')
   const [tick, setTick] = useState(0)
@@ -95,6 +102,15 @@ export default function App() {
   const [vehicles, setVehicles] = useState<VehicleSummary[]>([])
   const [activeVehicle, setActiveVehicle] = useState<VehicleDetail | null>(null)
   const [vehiclesLoading, setVehiclesLoading] = useState(false)
+
+  // Documents Module state
+  const [documentsSubView, setDocumentsSubView] = useState<'dashboard' | 'upload'>('dashboard')
+  const [documents, setDocuments] = useState<DocumentItem[]>([])
+  const [documentSummary, setDocumentSummary] = useState<DocumentSummary | null>(null)
+  const [documentsLoading, setDocumentsLoading] = useState(false)
+  const [previewingDoc, setPreviewingDoc] = useState<DocumentItem | null>(null)
+  const [editingDoc, setEditingDoc] = useState<DocumentItem | null>(null)
+  const [replacingDoc, setReplacingDoc] = useState<DocumentItem | null>(null)
 
   // Modals state
   const [reportModalOpen, setReportModalOpen] = useState(false)
@@ -128,28 +144,53 @@ export default function App() {
     }
   }, [])
 
+  // Load documents list and summary
+  const loadDocuments = useCallback(async () => {
+    setDocumentsLoading(true)
+    try {
+      const [docs, sum] = await Promise.all([
+        api<DocumentItem[]>('/api/documents'),
+        api<DocumentSummary>('/api/documents/summary'),
+      ])
+      setDocuments(docs)
+      setDocumentSummary(sum)
+    } catch (e) {
+      console.error('Failed to load documents:', e)
+    } finally {
+      setDocumentsLoading(false)
+    }
+  }, [])
+
   // Navigation helpers for Vehicle management module
   const navigateToVehicles = useCallback((subView: 'overview' | 'detail' | 'add' = 'overview', id?: string) => {
     setActiveNav('vehicles')
     setVehicleSubView(subView)
+    setSelectedVehicleId(id || null)
     if (id) {
-      setSelectedVehicleId(id)
       loadVehicleDetail(id)
       window.history.pushState({}, '', `/vehicles/${id}`)
     } else if (subView === 'add') {
-      setSelectedVehicleId(null)
       window.history.pushState({}, '', '/vehicles/add')
     } else {
-      setSelectedVehicleId(null)
       loadVehicles()
       window.history.pushState({}, '', '/vehicles')
     }
   }, [loadVehicleDetail, loadVehicles])
 
+  // Navigation helpers for Documents management module
+  const navigateToDocuments = useCallback((subView: 'dashboard' | 'upload' = 'dashboard') => {
+    setActiveNav('documents')
+    setDocumentsSubView(subView)
+    loadDocuments()
+    loadVehicles()
+    window.history.pushState({}, '', subView === 'upload' ? '/documents/upload' : '/documents')
+  }, [loadDocuments, loadVehicles])
+
   const navigateToHome = useCallback(() => {
     setActiveNav('home')
     setVehicleSubView('overview')
     setSelectedVehicleId(null)
+    setDocumentsSubView('dashboard')
     window.history.pushState({}, '', '/')
   }, [])
 
@@ -181,10 +222,19 @@ export default function App() {
         setSelectedVehicleId(null)
         loadVehicles()
       }
+    } else if (path.startsWith('/documents') || viewParam === 'documents') {
+      setActiveNav('documents')
+      if (path.includes('/upload') || q.get('action') === 'upload') {
+        setDocumentsSubView('upload')
+      } else {
+        setDocumentsSubView('dashboard')
+      }
+      loadDocuments()
+      loadVehicles()
     } else if (path === '/' && !viewParam) {
       setActiveNav('home')
     }
-  }, [loadVehicleDetail, loadVehicles])
+  }, [loadDocuments, loadVehicleDetail, loadVehicles])
 
   // Initialize and handle URL params + popstate history listener
   useEffect(() => {
@@ -208,8 +258,9 @@ export default function App() {
       const wantCase = q.get('case')
       const wantTab = q.get('tab')
 
-      if (wantCase) {
-        api<CaseRow[]>('/api/cases').then((cs) => {
+      api<CaseRow[]>('/api/cases').then((cs) => {
+        setCaseRows(cs)
+        if (wantCase) {
           const c = cs.find(x => x.case_id === wantCase)
           if (c) {
             setKase(c)
@@ -218,20 +269,21 @@ export default function App() {
               setCaseTab(wantTab as CaseTab)
             }
           }
-        }).catch(() => {})
-      }
+        }
+      }).catch(() => {})
     }).catch(() => {})
 
     window.addEventListener('popstate', syncFromLocation)
     return () => window.removeEventListener('popstate', syncFromLocation)
   }, [syncFromLocation])
 
-  // Load vehicles whenever user changes
+  // Load vehicles and documents whenever user changes
   useEffect(() => {
     if (user) {
       loadVehicles()
+      loadDocuments()
     }
-  }, [user, loadVehicles])
+  }, [user, loadVehicles, loadDocuments])
 
   // Helper to ensure an active case exists before navigating to case views
   const ensureCaseAndNavigate = async (tab: CaseTab, navId: NavItem) => {
@@ -254,10 +306,10 @@ export default function App() {
       navigateToHome()
     } else if (nav === 'vehicles') {
       navigateToVehicles('overview')
+    } else if (nav === 'documents') {
+      navigateToDocuments('dashboard')
     } else if (nav === 'cases') {
       ensureCaseAndNavigate('dashboard', 'cases')
-    } else if (nav === 'documents') {
-      ensureCaseAndNavigate('documents', 'documents')
     } else if (nav === 'ai-assistant') {
       ensureCaseAndNavigate('chat', 'ai-assistant')
     } else if (nav === 'profile') {
@@ -273,6 +325,7 @@ export default function App() {
         setUser(next.user_id)
         setU(next)
         loadVehicles()
+        loadDocuments()
       }
     } catch (e) {
       console.error(e)
@@ -284,6 +337,7 @@ export default function App() {
     setU(null)
     setKase(null)
     setVehicles([])
+    setDocuments([])
     setActiveVehicle(null)
     navigateToHome()
   }
@@ -298,6 +352,7 @@ export default function App() {
   const handleDemoStaged = (priyaUser: User) => {
     setU(priyaUser)
     api<CaseRow[]>('/api/cases').then((cs) => {
+      setCaseRows(cs)
       const demo = cs.find(c => c.case_id === 'case_demo') || cs[0]
       if (demo) {
         setKase(demo)
@@ -307,6 +362,7 @@ export default function App() {
       }
     }).catch(() => {})
     loadVehicles()
+    loadDocuments()
   }
 
   // Vehicle action handlers
@@ -354,6 +410,7 @@ export default function App() {
       }
 
       await loadVehicles()
+      await loadDocuments()
       if (created?.id) {
         navigateToVehicles('detail', created.id)
       } else {
@@ -374,6 +431,7 @@ export default function App() {
       })
       setActiveVehicle(updated)
       await loadVehicles()
+      await loadDocuments()
     } catch (e: any) {
       console.error('Error updating vehicle:', e)
       throw e
@@ -387,6 +445,7 @@ export default function App() {
         setActiveVehicle(null)
       }
       await loadVehicles()
+      await loadDocuments()
       navigateToVehicles('overview')
     } catch (e: any) {
       console.error('Error deleting vehicle:', e)
@@ -419,7 +478,7 @@ export default function App() {
     await loadVehicles()
   }
 
-  const handleUploadDocument = async (file: File, docType: string, docName: string, expiryDate?: string) => {
+  const handleUploadVehicleDocument = async (file: File, docType: string, docName: string, expiryDate?: string) => {
     if (!activeVehicle) return
     const fd = new FormData()
     fd.append('file', file)
@@ -431,17 +490,103 @@ export default function App() {
     await api(`/api/vehicles/${activeVehicle.id}/documents`, { method: 'POST', form: fd })
     await loadVehicleDetail(activeVehicle.id)
     await loadVehicles()
+    await loadDocuments()
   }
 
-  const handleDeleteDocument = async (docId: string) => {
+  const handleDeleteVehicleDocument = async (docId: string) => {
     if (!activeVehicle) return
     await api(`/api/vehicles/${activeVehicle.id}/documents/${docId}`, { method: 'DELETE' })
     await loadVehicleDetail(activeVehicle.id)
     await loadVehicles()
+    await loadDocuments()
+  }
+
+  // Document action handlers (Centralized Wallet)
+  const handleCreateDocument = async (data: UploadDocumentFormData, file: File) => {
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      fd.append('document_name', data.document_name)
+      fd.append('category', data.category)
+      fd.append('document_type', data.document_type)
+      if (data.document_number) fd.append('document_number', data.document_number)
+      if (data.issuing_authority) fd.append('issuing_authority', data.issuing_authority)
+      if (data.issue_date) fd.append('issue_date', data.issue_date)
+      if (data.expiry_date) fd.append('expiry_date', data.expiry_date)
+      if (data.resource_type) fd.append('resource_type', data.resource_type)
+      if (data.resource_id) fd.append('resource_id', data.resource_id)
+      if (data.notes) fd.append('notes', data.notes)
+
+      await api('/api/documents', {
+        method: 'POST',
+        form: fd,
+      })
+      await loadDocuments()
+      await loadVehicles()
+      navigateToDocuments('dashboard')
+    } catch (e: any) {
+      console.error('Failed to create document:', e)
+      throw e
+    }
+  }
+
+  const handleUpdateDocument = async (docId: string, updatedData: Partial<DocumentItem>) => {
+    try {
+      await api(`/api/documents/${docId}`, {
+        method: 'PATCH',
+        body: updatedData,
+      })
+      await loadDocuments()
+      await loadVehicles()
+    } catch (e: any) {
+      console.error('Failed to update document:', e)
+      throw e
+    }
+  }
+
+  const handleReplaceFile = async (docId: string, newFile: File) => {
+    try {
+      const fd = new FormData()
+      fd.append('file', newFile)
+      await api(`/api/documents/${docId}/replace`, {
+        method: 'POST',
+        form: fd,
+      })
+      await loadDocuments()
+      await loadVehicles()
+    } catch (e: any) {
+      console.error('Failed to replace document file:', e)
+      throw e
+    }
+  }
+
+  const handleDeleteDocument = async (docId: string) => {
+    try {
+      await api(`/api/documents/${docId}`, { method: 'DELETE' })
+      await loadDocuments()
+      await loadVehicles()
+    } catch (e: any) {
+      console.error('Failed to delete document:', e)
+    }
   }
 
   // Check if current view is a Case workspace view
-  const isCaseView = ['cases', 'documents', 'ai-assistant'].includes(activeNav) && !!kase
+  const isCaseView = ['cases', 'ai-assistant'].includes(activeNav) && !!kase
+
+  // Mapped options for selectors
+  const vehicleOptions = vehicles.map(v => ({
+    id: v.id,
+    registration_number: v.registration_number,
+    manufacturer: v.manufacturer,
+    model: v.model,
+  }))
+
+  const caseOptions = caseRows.map(c => ({
+    case_id: c.case_id,
+    case_number: c.case_number,
+    victim_display_name: c.victim_display_name,
+    hospital_name: c.hospital_name,
+  }))
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800 font-sans antialiased">
@@ -488,8 +633,7 @@ export default function App() {
                   key={t.id}
                   onClick={() => {
                     setCaseTab(t.id)
-                    if (t.id === 'documents') setActiveNav('documents')
-                    else if (t.id === 'chat') setActiveNav('ai-assistant')
+                    if (t.id === 'chat') setActiveNav('ai-assistant')
                     else setActiveNav('cases')
                   }}
                   className={`px-3.5 py-2 text-xs sm:text-sm font-medium whitespace-nowrap border-b-2 transition-all cursor-pointer ${
@@ -515,7 +659,7 @@ export default function App() {
             user={user}
             onReportAccident={() => setReportModalOpen(true)}
             onOpenVehicles={() => navigateToVehicles('overview')}
-            onOpenDocuments={() => ensureCaseAndNavigate('documents', 'documents')}
+            onOpenDocuments={() => navigateToDocuments('dashboard')}
             onOpenCases={() => ensureCaseAndNavigate('dashboard', 'cases')}
             onOpenAI={() => ensureCaseAndNavigate('chat', 'ai-assistant')}
             onOpenProfile={() => setProfileModalOpen(true)}
@@ -555,8 +699,8 @@ export default function App() {
                   onUploadPhoto={handleUploadPhoto}
                   onSetPrimaryPhoto={handleSetPrimaryPhoto}
                   onDeletePhoto={handleDeletePhoto}
-                  onUploadDocument={handleUploadDocument}
-                  onDeleteDocument={handleDeleteDocument}
+                  onUploadDocument={handleUploadVehicleDocument}
+                  onDeleteDocument={handleDeleteVehicleDocument}
                   onDeleteVehicle={async () => {
                     if (activeVehicle) await handleDeleteVehicle(activeVehicle.id)
                   }}
@@ -579,7 +723,36 @@ export default function App() {
           </>
         )}
 
-        {/* VIEW 3: Case Workspace View */}
+        {/* VIEW 3: Dedicated Full-Screen Documents Management Module */}
+        {activeNav === 'documents' && (
+          <>
+            {documentsSubView === 'dashboard' && (
+              <DocumentsDashboard
+                documents={documents}
+                summary={documentSummary}
+                vehicles={vehicleOptions}
+                loading={documentsLoading}
+                onUploadDocument={() => navigateToDocuments('upload')}
+                onPreviewDocument={(doc) => setPreviewingDoc(doc)}
+                onEditDocument={(doc) => setEditingDoc(doc)}
+                onReplaceFile={(doc) => setReplacingDoc(doc)}
+                onDeleteDocument={handleDeleteDocument}
+                onBackHome={navigateToHome}
+              />
+            )}
+
+            {documentsSubView === 'upload' && (
+              <UploadDocumentWizard
+                vehicles={vehicleOptions}
+                cases={caseOptions}
+                onCancel={() => navigateToDocuments('dashboard')}
+                onSave={handleCreateDocument}
+              />
+            )}
+          </>
+        )}
+
+        {/* VIEW 4: Case Workspace View */}
         {isCaseView && (
           <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
             {caseTab === 'dashboard' && (
@@ -594,7 +767,7 @@ export default function App() {
               />
             )}
             {caseTab === 'chat' && <Chat caseId={kase.case_id} refresh={refresh} />}
-            {caseTab === 'documents' && <Documents caseId={kase.case_id} refresh={refresh} />}
+            {caseTab === 'documents' && <CaseDocuments caseId={kase.case_id} refresh={refresh} />}
             {caseTab === 'tasks' && <Tasks caseId={kase.case_id} tick={tick} refresh={refresh} />}
             {caseTab === 'report' && <ReportView caseId={kase.case_id} />}
             {caseTab === 'mcp' && <McpPanel caseId={kase.case_id} />}
@@ -602,7 +775,7 @@ export default function App() {
         )}
 
         {/* Fallback if user clicked cases but no cases loaded yet */}
-        {activeNav !== 'home' && activeNav !== 'vehicles' && !kase && user && (
+        {activeNav !== 'home' && activeNav !== 'vehicles' && activeNav !== 'documents' && !kase && user && (
           <CaseList
             user={user}
             onOpen={(c) => {
@@ -623,7 +796,37 @@ export default function App() {
         />
       )}
 
-      {/* Modals */}
+      {/* Document View & Edit Modals */}
+      <DocumentViewerModal
+        document={previewingDoc}
+        onClose={() => setPreviewingDoc(null)}
+        onEdit={(doc) => {
+          setPreviewingDoc(null)
+          setEditingDoc(doc)
+        }}
+        onReplaceFile={(doc) => {
+          setPreviewingDoc(null)
+          setReplacingDoc(doc)
+        }}
+        onDelete={(docId) => {
+          handleDeleteDocument(docId)
+          setPreviewingDoc(null)
+        }}
+      />
+
+      <EditDocumentModal
+        document={editingDoc}
+        onClose={() => setEditingDoc(null)}
+        onSave={handleUpdateDocument}
+      />
+
+      <ReplaceFileModal
+        document={replacingDoc}
+        onClose={() => setReplacingDoc(null)}
+        onReplace={handleReplaceFile}
+      />
+
+      {/* System Modals */}
       <ReportAccidentModal
         isOpen={reportModalOpen}
         onClose={() => setReportModalOpen(false)}

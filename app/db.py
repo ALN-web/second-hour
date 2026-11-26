@@ -234,5 +234,30 @@ class VehicleInsurancePolicy(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class CentralDocument(Base):
+    __tablename__ = "central_documents"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("cdoc"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    document_name: Mapped[str] = mapped_column(String)
+    document_type: Mapped[str] = mapped_column(String)  # driving_licence, rc, insurance, puc, medical_report, hospital_bill, aadhaar, pan, passport, fir, etc.
+    category: Mapped[str] = mapped_column(String, index=True)  # personal, driving_licence, vehicle, insurance, medical, accident_case, other
+    file_name: Mapped[str] = mapped_column(String)
+    stored_path: Mapped[str] = mapped_column(String)
+    mime_type: Mapped[str] = mapped_column(String)
+    file_size: Mapped[int] = mapped_column(Integer, default=0)
+    sha256: Mapped[str | None] = mapped_column(String, nullable=True)
+    document_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    issuing_authority: Mapped[str | None] = mapped_column(String, nullable=True)
+    issue_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expiry_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verification_status: Mapped[str] = mapped_column(String, default="verified")  # verified | expiring_soon | expired | pending | not_verified
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resource_type: Mapped[str] = mapped_column(String, default="USER")  # USER | VEHICLE | ACCIDENT_CASE
+    resource_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)  # user_id, vehicle_id, or case_id
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 def init_db() -> None:
     Base.metadata.create_all(engine)

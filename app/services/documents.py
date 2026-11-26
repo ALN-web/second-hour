@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import config
-from app.db import Document, ExtractedField, new_id
+from app.db import CentralDocument, Document, ExtractedField, new_id
 from app.services.common import ServiceError, add_event, require_member
 
 CATEGORIES = ("medical_report", "hospital_bill", "police_document", "vehicle_document",
@@ -54,6 +54,23 @@ def save_upload(db: Session, actor_id: str, case_id: str, filename: str, data: b
     doc = Document(id=doc_id, case_id=case_id, uploaded_by=actor_id, filename=safe_name, stored_path=str(path),
                    mime_type=mimetypes.guess_type(safe_name)[0] or "application/octet-stream", sha256=digest)
     db.add(doc)
+
+    cdoc = CentralDocument(
+        id=doc_id,
+        user_id=actor_id,
+        document_name=safe_name,
+        document_type=doc.category or "other",
+        category="accident_case",
+        file_name=safe_name,
+        stored_path=str(path),
+        mime_type=doc.mime_type,
+        file_size=len(data),
+        sha256=digest,
+        verification_status="verified",
+        resource_type="ACCIDENT_CASE",
+        resource_id=case_id,
+    )
+    db.add(cdoc)
     add_event(db, case_id, actor_id, "document_uploaded", f"Uploaded {safe_name} (sha256 {digest[:12]}…)")
     db.commit()
     return doc_dict(db, doc)
@@ -220,6 +237,11 @@ def set_category(db: Session, actor_id: str, case_id: str, document_id: str, cat
     if not d or d.case_id != case_id or category not in CATEGORIES:
         raise ServiceError("Invalid document or category")
     d.category, d.category_confidence = category, 1.0
+    cdoc = db.get(CentralDocument, document_id)
+    if cdoc:
+        cdoc.document_type = category
+        if category in ("hospital_bill", "medical_report"):
+            cdoc.category = "medical"
     add_event(db, case_id, actor_id, "document_category", f"{d.filename} category set to {category} by family")
     db.commit()
     return doc_dict(db, d)

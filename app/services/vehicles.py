@@ -10,7 +10,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import VEHICLE_DOCS_DIR, VEHICLE_PHOTOS_DIR
-from app.db import User, Vehicle, VehicleDocument, VehicleInsurancePolicy, VehiclePhoto, new_id, utcnow
+from app.db import CentralDocument, User, Vehicle, VehicleDocument, VehicleInsurancePolicy, VehiclePhoto, new_id, utcnow
 from app.services.common import PermissionDenied, ServiceError, iso
 
 
@@ -73,7 +73,9 @@ def list_vehicles(db: Session, user_id: str) -> list[dict[str, Any]]:
         ins = db.scalars(
             select(VehicleInsurancePolicy).where(VehicleInsurancePolicy.vehicle_id == v.id).order_by(VehicleInsurancePolicy.created_at.desc())
         ).first()
-        doc_count = len(db.scalars(select(VehicleDocument.id).where(VehicleDocument.vehicle_id == v.id)).all())
+        vdoc_ids = set(db.scalars(select(VehicleDocument.id).where(VehicleDocument.vehicle_id == v.id)).all())
+        cdoc_ids = set(db.scalars(select(CentralDocument.id).where(CentralDocument.resource_type == "VEHICLE", CentralDocument.resource_id == v.id, CentralDocument.deleted_at.is_(None))).all())
+        doc_count = len(vdoc_ids.union(cdoc_ids))
         photo_count = len(db.scalars(select(VehiclePhoto.id).where(VehiclePhoto.vehicle_id == v.id)).all())
         results.append(vehicle_summary_dict(v, ins, doc_count, photo_count))
     return results
@@ -87,7 +89,40 @@ def get_vehicle(db: Session, user_id: str, vehicle_id: str) -> dict[str, Any]:
     status, days_left = calculate_insurance_status(insurance.expiry_date if insurance else None)
 
     photos = db.scalars(select(VehiclePhoto).where(VehiclePhoto.vehicle_id == v.id).order_by(VehiclePhoto.uploaded_at.desc())).all()
-    docs = db.scalars(select(VehicleDocument).where(VehicleDocument.vehicle_id == v.id).order_by(VehicleDocument.uploaded_at.desc())).all()
+    vdocs = db.scalars(select(VehicleDocument).where(VehicleDocument.vehicle_id == v.id).order_by(VehicleDocument.uploaded_at.desc())).all()
+    cdocs = db.scalars(select(CentralDocument).where(CentralDocument.resource_type == "VEHICLE", CentralDocument.resource_id == v.id, CentralDocument.deleted_at.is_(None)).order_by(CentralDocument.created_at.desc())).all()
+
+    seen_ids = set()
+    docs_payload = []
+    for d in vdocs:
+        seen_ids.add(d.id)
+        docs_payload.append({
+            "id": d.id,
+            "document_type": d.document_type,
+            "document_name": d.document_name,
+            "file_name": d.file_name,
+            "file_size": d.file_size,
+            "mime_type": d.mime_type,
+            "expiry_date": iso(d.expiry_date) if d.expiry_date else None,
+            "verification_status": d.verification_status,
+            "uploaded_at": iso(d.uploaded_at),
+            "url": f"/api/vehicles/{v.id}/documents/{d.id}/file",
+        })
+    for cd in cdocs:
+        if cd.id not in seen_ids:
+            seen_ids.add(cd.id)
+            docs_payload.append({
+                "id": cd.id,
+                "document_type": cd.document_type,
+                "document_name": cd.document_name,
+                "file_name": cd.file_name,
+                "file_size": cd.file_size,
+                "mime_type": cd.mime_type,
+                "expiry_date": iso(cd.expiry_date) if cd.expiry_date else None,
+                "verification_status": cd.verification_status,
+                "uploaded_at": iso(cd.created_at),
+                "url": f"/api/vehicles/{v.id}/documents/{cd.id}/file",
+            })
 
     return {
         "id": v.id,
@@ -134,21 +169,7 @@ def get_vehicle(db: Session, user_id: str, vehicle_id: str) -> dict[str, Any]:
             }
             for p in photos
         ],
-        "documents": [
-            {
-                "id": d.id,
-                "document_type": d.document_type,
-                "document_name": d.document_name,
-                "file_name": d.file_name,
-                "file_size": d.file_size,
-                "mime_type": d.mime_type,
-                "expiry_date": iso(d.expiry_date) if d.expiry_date else None,
-                "verification_status": d.verification_status,
-                "uploaded_at": iso(d.uploaded_at),
-                "url": f"/api/vehicles/{v.id}/documents/{d.id}/file",
-            }
-            for d in docs
-        ],
+        "documents": docs_payload,
     }
 
 
@@ -428,6 +449,25 @@ def add_vehicle_document(
         verification_status=status,
     )
     db.add(doc)
+
+    # Sync with CentralDocument (single source of truth)
+    cat = "insurance" if (document_type or "").lower() in ("insurance", "insurance_policy") else "vehicle"
+    cdoc = CentralDocument(
+        id=doc_id,
+        user_id=v.user_id,
+        document_name=document_name or filename,
+        document_type=document_type or "other",
+        category=cat,
+        file_name=filename,
+        stored_path=str(stored_path),
+        mime_type=doc.mime_type,
+        file_size=len(content),
+        expiry_date=expiry_date,
+        verification_status=status,
+        resource_type="VEHICLE",
+        resource_id=v.id,
+    )
+    db.add(cdoc)
     db.commit()
     return {
         "id": doc.id,
@@ -446,16 +486,23 @@ def add_vehicle_document(
 def delete_vehicle_document(db: Session, user_id: str, vehicle_id: str, doc_id: str) -> bool:
     v = require_vehicle_owner(db, user_id, vehicle_id)
     doc = db.get(VehicleDocument, doc_id)
-    if not doc or doc.vehicle_id != v.id:
+    cdoc = db.get(CentralDocument, doc_id)
+    if not doc and not cdoc:
         raise ServiceError("Document not found")
 
-    try:
-        if os.path.exists(doc.stored_path):
-            os.remove(doc.stored_path)
-    except OSError:
-        pass
+    stored_path = doc.stored_path if doc else (cdoc.stored_path if cdoc else None)
+    if stored_path:
+        try:
+            if os.path.exists(stored_path):
+                os.remove(stored_path)
+        except OSError:
+            pass
 
-    db.delete(doc)
+    if doc:
+        db.delete(doc)
+    if cdoc:
+        cdoc.deleted_at = utcnow()
+        db.delete(cdoc)
     db.commit()
     return True
 
@@ -463,7 +510,13 @@ def delete_vehicle_document(db: Session, user_id: str, vehicle_id: str, doc_id: 
 def get_document_file(db: Session, user_id: str, vehicle_id: str, doc_id: str) -> tuple[Path, str, str]:
     v = require_vehicle_owner(db, user_id, vehicle_id)
     doc = db.get(VehicleDocument, doc_id)
-    if not doc or doc.vehicle_id != v.id:
+    if not doc:
+        cdoc = db.get(CentralDocument, doc_id)
+        if cdoc and cdoc.resource_type == "VEHICLE" and cdoc.resource_id == v.id and cdoc.deleted_at is None:
+            p = Path(cdoc.stored_path)
+            if not p.exists():
+                raise ServiceError("Document file not found on disk")
+            return p, cdoc.mime_type, cdoc.file_name
         raise ServiceError("Document not found")
     path = Path(doc.stored_path)
     if not path.exists():
