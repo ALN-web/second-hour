@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +21,7 @@ from app.agent import mcp_client as M
 from app.db import AuditLog, ChatMessage, PendingAction, Report, SessionLocal, User, init_db
 from app.services import cases as case_svc
 from app.services import documents as doc_svc
+from app.services import vehicles as veh_svc
 from app.services.common import PermissionDenied, ServiceError, iso, require_member
 
 app = FastAPI(title="Second Hour agent host")
@@ -357,6 +358,161 @@ async def tts(body: TTSIn, user: User = Depends(current_user)):
 @app.get("/api/config")
 def ui_config():
     return {"tts": bool(config.ELEVENLABS_API_KEY), "llm": bool(config.ANTHROPIC_API_KEY), "demo": config.DEMO_MODE}
+
+
+# ------------------------------------------------------------------ vehicles
+
+class InsuranceIn(BaseModel):
+    provider: str
+    policy_number: str
+    policy_type: str = "Comprehensive"
+    start_date: str | None = None
+    expiry_date: str | None = None
+
+
+class VehicleCreateIn(BaseModel):
+    registration_number: str
+    category: str = "Four Wheeler"
+    manufacturer: str
+    model: str
+    variant: str | None = None
+    manufacturing_year: int | None = None
+    fuel_type: str = "Petrol"
+    color: str | None = None
+    chassis_number: str | None = None
+    engine_number: str | None = None
+    vin: str | None = None
+    engine_capacity: str | None = None
+    transmission: str | None = None
+    owner_name: str | None = None
+    ownership_type: str = "Individual"
+    relationship_to_user: str | None = "Self"
+    main_image: str | None = None
+    insurance: InsuranceIn | None = None
+
+
+class VehicleUpdateIn(BaseModel):
+    registration_number: str | None = None
+    category: str | None = None
+    manufacturer: str | None = None
+    model: str | None = None
+    variant: str | None = None
+    manufacturing_year: int | None = None
+    fuel_type: str | None = None
+    color: str | None = None
+    chassis_number: str | None = None
+    engine_number: str | None = None
+    vin: str | None = None
+    engine_capacity: str | None = None
+    transmission: str | None = None
+    owner_name: str | None = None
+    ownership_type: str | None = None
+    relationship_to_user: str | None = None
+    main_image: str | None = None
+    insurance: InsuranceIn | None = None
+
+
+@app.get("/api/vehicles")
+def list_vehicles(user: User = Depends(current_user), db=Depends(get_db)):
+    return veh_svc.list_vehicles(db, user.id)
+
+
+@app.post("/api/vehicles")
+def create_vehicle(body: VehicleCreateIn, user: User = Depends(current_user), db=Depends(get_db)):
+    return veh_svc.create_vehicle(db, user.id, body.model_dump())
+
+
+@app.get("/api/vehicles/{vehicle_id}")
+def get_vehicle(vehicle_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return veh_svc.get_vehicle(db, user.id, vehicle_id)
+
+
+@app.put("/api/vehicles/{vehicle_id}")
+def update_vehicle(vehicle_id: str, body: VehicleUpdateIn, user: User = Depends(current_user), db=Depends(get_db)):
+    return veh_svc.update_vehicle(db, user.id, vehicle_id, body.model_dump(exclude_unset=True))
+
+
+@app.delete("/api/vehicles/{vehicle_id}")
+def delete_vehicle(vehicle_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    veh_svc.delete_vehicle(db, user.id, vehicle_id)
+    return {"ok": True}
+
+
+@app.post("/api/vehicles/{vehicle_id}/photos")
+async def upload_vehicle_photo(
+    vehicle_id: str,
+    file: UploadFile = File(...),
+    photo_category: str = Form(default="main"),
+    is_primary: bool = Form(default=False),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    content = await file.read()
+    return veh_svc.add_vehicle_photo(
+        db, user.id, vehicle_id, photo_category, file.filename or "photo.jpg", content, is_primary
+    )
+
+
+@app.post("/api/vehicles/{vehicle_id}/photos/{photo_id}/primary")
+def set_primary_vehicle_photo(
+    vehicle_id: str, photo_id: str, user: User = Depends(current_user), db=Depends(get_db)
+):
+    return veh_svc.set_primary_photo(db, user.id, vehicle_id, photo_id)
+
+
+@app.delete("/api/vehicles/{vehicle_id}/photos/{photo_id}")
+def delete_vehicle_photo(
+    vehicle_id: str, photo_id: str, user: User = Depends(current_user), db=Depends(get_db)
+):
+    veh_svc.delete_vehicle_photo(db, user.id, vehicle_id, photo_id)
+    return {"ok": True}
+
+
+@app.get("/api/vehicles/{vehicle_id}/photos/{photo_id}/file")
+def get_vehicle_photo_file(
+    vehicle_id: str, photo_id: str, user: User = Depends(current_user), db=Depends(get_db)
+):
+    path, mime, filename = veh_svc.get_photo_file(db, user.id, vehicle_id, photo_id)
+    return FileResponse(path, media_type=mime, filename=filename)
+
+
+@app.post("/api/vehicles/{vehicle_id}/documents")
+async def upload_vehicle_document(
+    vehicle_id: str,
+    file: UploadFile = File(...),
+    document_type: str = Form(default="other"),
+    document_name: str = Form(default=""),
+    expiry_date: str = Form(default=""),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    from datetime import datetime
+    content = await file.read()
+    exp_dt = None
+    if expiry_date:
+        try:
+            exp_dt = datetime.fromisoformat(expiry_date.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            pass
+    return veh_svc.add_vehicle_document(
+        db, user.id, vehicle_id, document_type, document_name or (file.filename or "doc"), file.filename or "doc.pdf", content, exp_dt
+    )
+
+
+@app.delete("/api/vehicles/{vehicle_id}/documents/{doc_id}")
+def delete_vehicle_document(
+    vehicle_id: str, doc_id: str, user: User = Depends(current_user), db=Depends(get_db)
+):
+    veh_svc.delete_vehicle_document(db, user.id, vehicle_id, doc_id)
+    return {"ok": True}
+
+
+@app.get("/api/vehicles/{vehicle_id}/documents/{doc_id}/file")
+def get_vehicle_document_file(
+    vehicle_id: str, doc_id: str, user: User = Depends(current_user), db=Depends(get_db)
+):
+    path, mime, filename = veh_svc.get_document_file(db, user.id, vehicle_id, doc_id)
+    return FileResponse(path, media_type=mime, filename=filename)
 
 
 # ------------------------------------------------------------------ presenter controls (synthetic demo only)
