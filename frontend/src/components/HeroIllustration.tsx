@@ -1,172 +1,170 @@
-
-export function HeroIllustration({ className = "w-full max-w-[420px] h-auto" }: { className?: string }) {
+export function HeroIllustration({ className = "w-full max-w-[460px] h-auto" }: { className?: string }) {
   return (
     <div className={`relative flex items-center justify-center select-none ${className}`}>
-      {/* Background ambient radial glow */}
-      <div className="absolute inset-0 bg-radial from-accent-500/10 via-navy-800/20 to-transparent blur-2xl pointer-events-none rounded-full" />
+      {/* Background ambient radial blue glow */}
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[340px] h-[340px] bg-blue-600/20 rounded-full blur-3xl pointer-events-none" />
       
       <svg
-        viewBox="0 0 460 360"
+        viewBox="0 0 520 380"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
-        className="w-full h-auto drop-shadow-2xl"
+        className="w-full h-auto drop-shadow-2xl overflow-visible"
       >
         <defs>
-          {/* Gradients */}
-          <linearGradient id="shieldGrad" x1="230" y1="20" x2="230" y2="330" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#1e3a5f" stopOpacity="0.85" />
-            <stop offset="60%" stopColor="#10243f" stopOpacity="0.65" />
-            <stop offset="100%" stopColor="#0b1a2e" stopOpacity="0.4" />
+          {/* Radial back glow */}
+          <radialGradient id="centerBlueGlow" cx="50%" cy="45%" r="45%">
+            <stop offset="0%" stopColor="#1d4ed8" stopOpacity="0.45" />
+            <stop offset="60%" stopColor="#0f2b5c" stopOpacity="0.2" />
+            <stop offset="100%" stopColor="#0a192f" stopOpacity="0" />
+          </radialGradient>
+
+          {/* Shield Fill Gradient */}
+          <linearGradient id="refShieldFill" x1="280" y1="60" x2="280" y2="240" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#1e3a68" stopOpacity="0.9" />
+            <stop offset="100%" stopColor="#0d2142" stopOpacity="0.95" />
           </linearGradient>
 
-          <linearGradient id="shieldBorder" x1="60" y1="20" x2="400" y2="330" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#f97316" stopOpacity="0.9" />
-            <stop offset="35%" stopColor="#38bdf8" stopOpacity="0.6" />
-            <stop offset="70%" stopColor="#f97316" stopOpacity="0.8" />
-            <stop offset="100%" stopColor="#1e3a5f" stopOpacity="0.4" />
+          {/* Shield Border Gradient */}
+          <linearGradient id="refShieldBorder" x1="220" y1="60" x2="340" y2="240" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#60a5fa" />
+            <stop offset="50%" stopColor="#3b82f6" />
+            <stop offset="100%" stopColor="#1d4ed8" />
           </linearGradient>
 
-          <linearGradient id="roadGrad" x1="120" y1="350" x2="340" y2="170" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#0b1a2e" stopOpacity="0.95" />
-            <stop offset="50%" stopColor="#1e3a5f" stopOpacity="0.75" />
-            <stop offset="100%" stopColor="#2a4d7a" stopOpacity="0.4" />
+          {/* Road Surface Gradient */}
+          <linearGradient id="refRoadSurface" x1="100" y1="360" x2="480" y2="200" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#0c1f38" stopOpacity="0.95" />
+            <stop offset="60%" stopColor="#122c54" stopOpacity="0.85" />
+            <stop offset="100%" stopColor="#0a192f" stopOpacity="0.4" />
           </linearGradient>
 
-          <linearGradient id="roadBorder" x1="230" y1="350" x2="230" y2="160" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#f97316" stopOpacity="0.8" />
-            <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.3" />
+          {/* Orange Right Shoulder Glow */}
+          <linearGradient id="refOrangeCurve" x1="200" y1="360" x2="480" y2="200" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#ff7a18" stopOpacity="1" />
+            <stop offset="60%" stopColor="#ea580c" stopOpacity="0.9" />
+            <stop offset="100%" stopColor="#ff8a2b" stopOpacity="0.2" />
           </linearGradient>
 
-          <linearGradient id="carGrad" x1="190" y1="200" x2="280" y2="270" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#ffffff" />
-            <stop offset="50%" stopColor="#f1f5f9" />
-            <stop offset="100%" stopColor="#cbd5e1" />
-          </linearGradient>
-
-          <linearGradient id="glowRing" x1="100" y1="100" x2="360" y2="300" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#f97316" stopOpacity="0.3" />
-            <stop offset="100%" stopColor="#0284c7" stopOpacity="0.1" />
-          </linearGradient>
-
-          <filter id="shieldGlow" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="8" result="blur" />
+          {/* Glow filter */}
+          <filter id="roadOrangeGlow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="4" result="blur" />
             <feComposite in="SourceGraphic" in2="blur" operator="over" />
           </filter>
 
-          <filter id="pulseGlow" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur stdDeviation="12" result="blur" />
+          <filter id="shieldCyanGlow" x="-25%" y="-25%" width="150%" height="150%">
+            <feGaussianBlur stdDeviation="6" result="blur" />
             <feComposite in="SourceGraphic" in2="blur" operator="over" />
           </filter>
         </defs>
 
-        {/* Ambient Ring */}
-        <circle cx="230" cy="180" r="150" stroke="url(#glowRing)" strokeWidth="1.5" strokeDasharray="4 8" className="opacity-60" />
-        <circle cx="230" cy="180" r="170" stroke="#38bdf8" strokeOpacity="0.15" strokeWidth="1" strokeDasharray="6 12" />
+        {/* Ambient Back Glow Circle */}
+        <circle cx="290" cy="160" r="140" fill="url(#centerBlueGlow)" />
 
-        {/* Outer Protective Shield Aura */}
-        <path
-          d="M230 25L95 72C95 180 150 270 230 325C310 270 365 180 365 72L230 25Z"
-          fill="url(#shieldGrad)"
-          stroke="url(#shieldBorder)"
-          strokeWidth="2.5"
-          className="transition-all duration-700"
-        />
-
-        {/* Inner Shield Contour */}
-        <path
-          d="M230 42L112 84C112 173 158 250 230 298C302 250 348 173 348 84L230 42Z"
-          stroke="#f97316"
-          strokeOpacity="0.2"
-          strokeWidth="1.5"
-          strokeDasharray="5 5"
-        />
-
-        {/* Curved Road Way */}
-        {/* Left edge of road */}
-        <path
-          d="M100 350C150 310 180 260 210 210C230 178 245 155 255 140"
-          stroke="url(#roadBorder)"
-          strokeWidth="2"
-          strokeLinecap="round"
-        />
-        {/* Right edge of road */}
-        <path
-          d="M330 350C290 310 275 260 265 210C255 178 255 155 255 140"
-          stroke="url(#roadBorder)"
-          strokeWidth="2"
-          strokeLinecap="round"
-        />
+        {/* =================================================== CURVED HIGHWAY */}
         {/* Road Surface */}
         <path
-          d="M100 350C150 310 180 260 210 210C230 178 245 155 255 140C255 140 255 155 265 210C275 260 290 310 330 350Z"
-          fill="url(#roadGrad)"
+          d="M 120 370 C 230 330, 310 270, 370 210 C 410 170, 440 145, 470 135 L 490 145 C 460 160, 420 190, 370 240 C 300 310, 220 365, 120 370 Z"
+          fill="url(#refRoadSurface)"
+        />
+
+        {/* Left Road Shoulder Line (Soft White/Cyan) */}
+        <path
+          d="M 120 370 C 230 330, 310 270, 370 210 C 410 170, 440 145, 470 135"
+          stroke="#93c5fd"
+          strokeWidth="2.5"
+          strokeOpacity="0.75"
+          strokeLinecap="round"
         />
 
         {/* Road Center Dashed Line */}
         <path
-          d="M208 348C214 310 224 265 237 210C244 182 249 158 255 142"
-          stroke="#f8fafc"
-          strokeOpacity="0.75"
-          strokeWidth="3"
-          strokeDasharray="14 10"
+          d="M 150 370 C 240 335, 315 285, 365 235 C 400 200, 430 170, 460 150"
+          stroke="#ffffff"
+          strokeWidth="3.5"
+          strokeDasharray="16 12"
           strokeLinecap="round"
+          strokeOpacity="0.85"
         />
 
-        {/* Perspective Road Glow nodes */}
-        <circle cx="210" cy="210" r="3" fill="#38bdf8" />
-        <circle cx="265" cy="210" r="3" fill="#38bdf8" />
-        <circle cx="255" cy="140" r="4" fill="#f97316" filter="url(#shieldGlow)" />
+        {/* Right Road Shoulder Line (VIBRANT GLOWING ORANGE) */}
+        <path
+          d="M 210 380 C 290 345, 360 295, 410 240 C 445 200, 470 170, 490 155"
+          stroke="url(#refOrangeCurve)"
+          strokeWidth="4.5"
+          strokeLinecap="round"
+          filter="url(#roadOrangeGlow)"
+        />
+        {/* Secondary brighter core orange line */}
+        <path
+          d="M 210 380 C 290 345, 360 295, 410 240 C 445 200, 470 170, 490 155"
+          stroke="#ffedd5"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeOpacity="0.8"
+        />
 
-        {/* Vehicle - Sleek Modern Perspective Car */}
-        <g transform="translate(195, 222)">
-          {/* Vehicle Shadow */}
-          <ellipse cx="45" cy="46" rx="36" ry="10" fill="#000000" fillOpacity="0.45" />
-
-          {/* Car Body Main */}
+        {/* =================================================== PROTECTIVE SHIELD */}
+        <g transform="translate(210, 50)">
+          {/* Shield Outer Glow Outline */}
           <path
-            d="M16 34C18 29 25 24 35 22L48 18C54 16 62 16 68 20L77 26C83 29 86 33 85 38L83 41C82 43 78 44 72 44H18C13 44 12 40 14 36L16 34Z"
-            fill="url(#carGrad)"
-            stroke="#1e3a5f"
-            strokeWidth="1.5"
+            d="M 80 10 L 20 40 C 20 115, 45 160, 80 185 C 115 160, 140 115, 140 40 L 80 10 Z"
+            fill="url(#refShieldFill)"
+            stroke="url(#refShieldBorder)"
+            strokeWidth="3.5"
+            strokeLinejoin="round"
+            filter="url(#shieldCyanGlow)"
           />
 
-          {/* Car Roof & Cabin Glass */}
+          {/* Shield Crisp Border */}
           <path
-            d="M33 22L44 12C47 9 53 8 57 10L68 16C71 18 72 20 72 23L33 22Z"
-            fill="#0f172a"
-            stroke="#38bdf8"
-            strokeWidth="1"
+            d="M 80 10 L 20 40 C 20 115, 45 160, 80 185 C 115 160, 140 115, 140 40 L 80 10 Z"
+            fill="none"
+            stroke="#93c5fd"
+            strokeWidth="2"
+            strokeLinejoin="round"
+            strokeOpacity="0.9"
           />
-          {/* Windshield Reflection */}
-          <path d="M44 14L40 21H55L57 12C54 11 47 11 44 14Z" fill="#38bdf8" fillOpacity="0.4" />
 
-          {/* Headlights & Tail Lights */}
-          <circle cx="16" cy="36" r="3" fill="#f97316" filter="url(#shieldGlow)" />
-          <path d="M16 36L5 42" stroke="#f97316" strokeOpacity="0.5" strokeWidth="2" strokeLinecap="round" />
-          <circle cx="82" cy="33" r="3.5" fill="#38bdf8" filter="url(#shieldGlow)" />
-          <path d="M82 33L104 36" stroke="#38bdf8" strokeOpacity="0.4" strokeWidth="3" strokeLinecap="round" />
+          {/* FRONT-FACING CAR SILHOUETTE INSIDE SHIELD */}
+          <g transform="translate(48, 70)">
+            {/* Car Cabin & Windshield */}
+            <path
+              d="M 16 18 L 20 4 C 21 1.5, 23 0, 26 0 L 38 0 C 41 0, 43 1.5, 44 4 L 48 18 Z"
+              fill="#bfdbfe"
+              fillOpacity="0.9"
+            />
+            {/* Windshield Glass Inset */}
+            <path
+              d="M 19 16 L 22 5 C 22.5 3.5, 24 2.5, 26 2.5 L 38 2.5 C 40 2.5, 41.5 3.5, 42 5 L 45 16 Z"
+              fill="#1e3a68"
+            />
 
-          {/* Wheels */}
-          <g>
-            <circle cx="28" cy="42" r="7" fill="#0f172a" stroke="#475569" strokeWidth="2" />
-            <circle cx="28" cy="42" r="3" fill="#94a3b8" />
-            <circle cx="68" cy="42" r="7" fill="#0f172a" stroke="#475569" strokeWidth="2" />
-            <circle cx="68" cy="42" r="3" fill="#94a3b8" />
+            {/* Car Lower Body */}
+            <rect
+              x="8"
+              y="16"
+              width="48"
+              height="20"
+              rx="6"
+              fill="#bfdbfe"
+              fillOpacity="0.95"
+            />
+
+            {/* Front Headlights */}
+            <rect x="12" y="21" width="8" height="5" rx="2" fill="#1e3a68" />
+            <circle cx="16" cy="23.5" r="1.5" fill="#ffffff" />
+
+            <rect x="44" y="21" width="8" height="5" rx="2" fill="#1e3a68" />
+            <circle cx="48" cy="23.5" r="1.5" fill="#ffffff" />
+
+            {/* Front Grille */}
+            <rect x="24" y="25" width="16" height="4" rx="1.5" fill="#1e3a68" />
+
+            {/* Wheels / Tires Bottom */}
+            <rect x="11" y="34" width="7" height="6" rx="2" fill="#0f2347" />
+            <rect x="46" y="34" width="7" height="6" rx="2" fill="#0f2347" />
           </g>
         </g>
-
-        {/* Protective Safety Emblem in Shield Peak */}
-        <g transform="translate(214, 52)">
-          <circle cx="16" cy="16" r="18" fill="#1e3a5f" stroke="#f97316" strokeWidth="2" />
-          <path d="M16 9V17L21 20" stroke="#f8fafc" strokeWidth="2.2" strokeLinecap="round" />
-          <circle cx="16" cy="16" r="2" fill="#f97316" />
-        </g>
-
-        {/* Ambient Floating Safety Sparkles */}
-        <circle cx="140" cy="100" r="3" fill="#38bdf8" fillOpacity="0.8" />
-        <circle cx="320" cy="115" r="2.5" fill="#f97316" fillOpacity="0.9" />
-        <circle cx="120" cy="220" r="2" fill="#ffffff" fillOpacity="0.7" />
-        <circle cx="340" cy="240" r="3" fill="#38bdf8" fillOpacity="0.7" />
       </svg>
     </div>
   )
