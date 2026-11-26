@@ -13,6 +13,7 @@ REPORT_DIR = DATA_DIR / "reports"
 VEHICLE_DIR = DATA_DIR / "vehicles"
 VEHICLE_DOCS_DIR = VEHICLE_DIR / "documents"
 VEHICLE_PHOTOS_DIR = VEHICLE_DIR / "photos"
+CENTRAL_DOCS_DIR = DATA_DIR / "documents"
 DB_PATH = DATA_DIR / "secondhour.db"
 KNOWLEDGE_DIR = ROOT / "knowledge"
 DEMO_ASSETS_DIR = ROOT / "demo_assets"
@@ -35,5 +36,5 @@ POLICE_WINDOW_HOURS_LIFE_THREATENING = 48
 PIB_MARCH_URL = "https://www.pib.gov.in/PressReleasePage.aspx?PRID=2238637"
 PIB_AUGUST_URL = "https://www.pib.gov.in/PressReleasePage.aspx?PRID=2298285"
 
-for d in (DATA_DIR, UPLOAD_DIR, REPORT_DIR, VEHICLE_DIR, VEHICLE_DOCS_DIR, VEHICLE_PHOTOS_DIR):
+for d in (DATA_DIR, UPLOAD_DIR, REPORT_DIR, VEHICLE_DIR, VEHICLE_DOCS_DIR, VEHICLE_PHOTOS_DIR, CENTRAL_DOCS_DIR):
     d.mkdir(parents=True, exist_ok=True)
