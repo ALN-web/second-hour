@@ -24,6 +24,7 @@ from app.services import cases as case_svc
 from app.services import central_documents as central_docs_svc
 from app.services import documents as doc_svc
 from app.services import vehicles as veh_svc
+from app.services import assistant as asst_svc
 from app.services.common import PermissionDenied, ServiceError, iso, require_member
 
 app = FastAPI(title="Second Hour agent host")
@@ -85,8 +86,28 @@ async def health():
 
 
 @app.get("/api/cases")
-def my_cases(user: User = Depends(current_user), db=Depends(get_db)):
+def my_cases(
+    overview: bool = Query(False),
+    search: str | None = Query(None),
+    status: str | None = Query(None),
+    date: str | None = Query(None),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    if overview or search is not None or status is not None:
+        return case_svc.list_cases_overview(db, user.id, search=search, status_filter=status, date_filter=date)
     return case_svc.list_cases_for(db, user.id)
+
+
+@app.get("/api/cases/overview")
+def cases_overview(
+    search: str | None = Query(None),
+    status: str | None = Query(None),
+    date: str | None = Query(None),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return case_svc.list_cases_overview(db, user.id, search=search, status_filter=status, date_filter=date)
 
 
 class NewCase(BaseModel):
@@ -95,15 +116,141 @@ class NewCase(BaseModel):
     victim_display_name: str | None = None
     hospital_name: str | None = None
     life_threatening: bool = False
+    vehicle_id: str | None = None
+    accident_type: str | None = None
+    injury_severity: str | None = None
+    accident_description: str | None = None
+    damage_severity: str | None = None
 
 
 @app.post("/api/cases")
-async def new_case(body: NewCase, user: User = Depends(current_user)):
-    # User clicked "Create" in the UI: that click is the approval. Executed via MCP.
-    out, err = await M.call_once("create_accident_case", {"actor_id": user.id, **body.model_dump()}, None, user.id, "approved")
-    if err:
-        raise mcp_error(out)
-    return out
+async def new_case(body: NewCase, user: User = Depends(current_user), db=Depends(get_db)):
+    # Try calling MCP tool first; if MCP is offline, execute directly via case_svc
+    try:
+        out, err = await M.call_once(
+            "create_accident_case",
+            {"actor_id": user.id, **body.model_dump()},
+            None,
+            user.id,
+            "approved",
+        )
+        if not err and out:
+            return out
+    except Exception:
+        pass
+    return case_svc.create_case(
+        db,
+        user.id,
+        body.incident_at,
+        body.approximate_location,
+        body.victim_display_name,
+        body.hospital_name,
+        body.life_threatening,
+        body.vehicle_id,
+        body.accident_type,
+        body.injury_severity,
+        body.accident_description,
+        body.damage_severity,
+    )
+
+
+@app.get("/api/cases/{case_id}/workspace")
+def case_workspace(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.get_case_workspace(db, user.id, case_id)
+
+
+class SectionUpdate(BaseModel):
+    section: str
+    data: dict
+
+
+@app.patch("/api/cases/{case_id}/section")
+def update_section(case_id: str, body: SectionUpdate, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.update_case_section(db, user.id, case_id, body.section, body.data)
+
+
+class PoliceApprove(BaseModel):
+    approved: bool
+    feedback: str = ""
+
+
+@app.post("/api/cases/{case_id}/police/approve")
+def approve_police(case_id: str, body: PoliceApprove, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.approve_police_draft(db, user.id, case_id, body.approved, body.feedback)
+
+
+class LinkVehicle(BaseModel):
+    vehicle_id: str | None = None
+
+
+@app.post("/api/cases/{case_id}/vehicle")
+def link_vehicle(case_id: str, body: LinkVehicle, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.link_case_vehicle(db, user.id, case_id, body.vehicle_id)
+
+
+class MemberAdd(BaseModel):
+    name: str
+    role: str = "member"
+    relationship: str = "Family"
+    contact_number: str = ""
+    permissions_summary: str = "View & Add Tasks"
+
+
+@app.post("/api/cases/{case_id}/members")
+def add_member(case_id: str, body: MemberAdd, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.add_case_member(
+        db, user.id, case_id, body.name, body.role, body.relationship, body.contact_number, body.permissions_summary
+    )
+
+
+class TaskCreate(BaseModel):
+    title: str
+    description: str = ""
+    priority: str = "medium"
+    due_at: str | None = None
+    due_source: str | None = None
+    assignee_id: str | None = None
+
+
+@app.post("/api/cases/{case_id}/tasks/create")
+def create_task_endpoint(case_id: str, body: TaskCreate, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.create_task(
+        db, user.id, case_id, body.title, body.description, body.priority, body.due_at, body.due_source
+    )
+
+
+@app.post("/api/cases/{case_id}/tasks/{task_id}/toggle")
+def toggle_task(case_id: str, task_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.toggle_task_status(db, user.id, case_id, task_id)
+
+
+@app.post("/api/cases/{case_id}/evidence")
+async def upload_evidence(
+    case_id: str,
+    file: UploadFile = File(...),
+    document_type: str = Form("accident_photo"),
+    category: str = Form("accident_case"),
+    notes: str = Form(""),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    require_member(db, user.id, case_id)
+    data = await file.read()
+    cdoc = central_docs_svc.save_central_document(
+        db=db,
+        user_id=user.id,
+        file_name=file.filename or "evidence.jpg",
+        file_data=data,
+        mime_type=file.content_type or "image/jpeg",
+        document_type=document_type,
+        category=category,
+        resource_type="ACCIDENT_CASE",
+        resource_id=case_id,
+        notes=notes,
+    )
+    case_svc.add_event(db, case_id, user.id, "evidence_uploaded", f"Evidence uploaded: {cdoc.document_name}")
+    db.commit()
+    return {"ok": True, "id": cdoc.id, "document_name": cdoc.document_name}
 
 
 @app.get("/api/cases/{case_id}/summary")
@@ -700,6 +847,67 @@ def get_document_file_endpoint(
         filename=filename,
         content_disposition_type="attachment" if download else "inline",
     )
+
+
+# ------------------------------------------------------------------ Ask Second Hour AI Assistant
+
+class CreateConversationPayload(BaseModel):
+    title: str | None = None
+
+
+class PinConversationPayload(BaseModel):
+    pinned: bool
+
+
+class AssistantMessagePayload(BaseModel):
+    content: str
+
+
+class AssistantActionPayload(BaseModel):
+    action_type: str
+    payload: dict = {}
+
+
+@app.get("/api/ai/conversations")
+def list_ai_conversations(user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.list_conversations(db, user.id)
+
+
+@app.post("/api/ai/conversations")
+def create_ai_conversation(body: CreateConversationPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.create_conversation(db, user.id, body.title)
+
+
+@app.get("/api/ai/conversations/{conv_id}")
+def get_ai_conversation(conv_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.get_conversation(db, user.id, conv_id)
+
+
+@app.delete("/api/ai/conversations/{conv_id}")
+def delete_ai_conversation(conv_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    asst_svc.delete_conversation(db, user.id, conv_id)
+    return {"ok": True}
+
+
+@app.delete("/api/ai/conversations")
+def clear_ai_conversations(user: User = Depends(current_user), db=Depends(get_db)):
+    cnt = asst_svc.clear_conversations(db, user.id)
+    return {"ok": True, "cleared_count": cnt}
+
+
+@app.patch("/api/ai/conversations/{conv_id}/pin")
+def pin_ai_conversation(conv_id: str, body: PinConversationPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.pin_conversation(db, user.id, conv_id, body.pinned)
+
+
+@app.post("/api/ai/conversations/{conv_id}/messages")
+def send_ai_message(conv_id: str, body: AssistantMessagePayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.post_user_message(db, user.id, conv_id, body.content)
+
+
+@app.post("/api/ai/actions/execute")
+def execute_ai_action(body: AssistantActionPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.execute_assistant_action(db, user.id, body.action_type, body.payload)
 
 
 # ------------------------------------------------------------------ MCP panel

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, getUser, setUser, fmtTime } from './api'
-import { Dashboard, Chat, Documents as CaseDocuments, Tasks, ReportView, McpPanel, McpTicker } from './Views'
+import { api, getUser, setUser } from './api'
+import { McpTicker } from './Views'
 import { Navbar, type NavItem } from './components/Navbar'
 import { Homepage } from './components/Homepage'
 import { ReportAccidentModal, ProfileModal, NotificationsModal } from './components/Modals'
@@ -12,6 +12,9 @@ import { UploadDocumentWizard } from './documents/UploadDocumentWizard'
 import { DocumentViewerModal } from './documents/DocumentViewerModal'
 import { EditDocumentModal } from './documents/EditDocumentModal'
 import { ReplaceFileModal } from './documents/ReplaceFileModal'
+import { CasesOverview } from './cases/CasesOverview'
+import { CaseWorkspace } from './cases/CaseWorkspace'
+import { AssistantModule } from './assistant/AssistantModule'
 import type { VehicleSummary, VehicleDetail, VehicleFormData } from './vehicles/types'
 import type { DocumentItem, DocumentSummary, UploadDocumentFormData } from './documents/types'
 
@@ -37,64 +40,13 @@ function EmergencyBanner() {
   )
 }
 
-function CaseList({ user, onOpen, onNew }: { user: User; onOpen: (c: CaseRow) => void; onNew: () => void }) {
-  const [cases, setCases] = useState<CaseRow[]>([])
-  const load = useCallback(() => { api<CaseRow[]>('/api/cases').then(setCases).catch(() => {}) }, [])
-  useEffect(load, [load])
-
-  return (
-    <div className="max-w-3xl mx-auto px-4 py-8 space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-navy-950">Accident Cases</h1>
-          <p className="text-xs text-slate-500">Active and past cases coordinated by {user.name}</p>
-        </div>
-        <button className="btn-accent text-xs" onClick={onNew}>+ Report New Accident</button>
-      </div>
-
-      <div className="space-y-3">
-        {cases.map(c => (
-          <div
-            key={c.case_id}
-            onClick={() => onOpen(c)}
-            className="card p-4 hover:border-navy-700 hover:shadow-md transition cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-          >
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-navy-900 text-base">{c.case_number}</span>
-                <span className="chip bg-emerald-50 text-emerald-700 text-[11px] font-semibold border border-emerald-200">PM-RAHAT Active</span>
-              </div>
-              <div className="text-sm text-slate-700 mt-1 font-medium">
-                Victim: {c.victim_display_name || 'Ravi Kumar'} · Hospital: {c.hospital_name || 'Sample City Hospital'}
-              </div>
-              <div className="text-xs text-slate-400 mt-0.5">
-                Incident: {fmtTime(c.incident_at)} IST
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 self-end sm:self-center">
-              <span className="text-xs font-semibold text-accent-500 group-hover:underline">Open Workspace →</span>
-            </div>
-          </div>
-        ))}
-
-        {cases.length === 0 && (
-          <div className="card text-center py-8 text-sm text-slate-500">
-            No active cases found. Click "Report New Accident" to create a case.
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
 export default function App() {
   const [user, setU] = useState<User | null>(null)
   const [kase, setKase] = useState<CaseRow | null>(null)
   const [caseRows, setCaseRows] = useState<CaseRow[]>([])
   const [activeNav, setActiveNav] = useState<NavItem>('home')
   const [caseTab, setCaseTab] = useState<CaseTab>('dashboard')
-  const [tick, setTick] = useState(0)
+  const [, setTick] = useState(0)
 
   // Vehicles Module state
   const [vehicleSubView, setVehicleSubView] = useState<'overview' | 'detail' | 'add'>('overview')
@@ -111,6 +63,10 @@ export default function App() {
   const [previewingDoc, setPreviewingDoc] = useState<DocumentItem | null>(null)
   const [editingDoc, setEditingDoc] = useState<DocumentItem | null>(null)
   const [replacingDoc, setReplacingDoc] = useState<DocumentItem | null>(null)
+
+  // Cases Module state
+  const [caseSubView, setCaseSubView] = useState<'overview' | 'workspace'>('overview')
+  const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null)
 
   // Modals state
   const [reportModalOpen, setReportModalOpen] = useState(false)
@@ -186,11 +142,31 @@ export default function App() {
     window.history.pushState({}, '', subView === 'upload' ? '/documents/upload' : '/documents')
   }, [loadDocuments, loadVehicles])
 
+  // Navigation helpers for Cases management module
+  const navigateToCases = useCallback((subView: 'overview' | 'workspace' = 'overview', id?: string) => {
+    setActiveNav('cases')
+    setCaseSubView(subView)
+    setSelectedCaseId(id || null)
+    if (id) {
+      window.history.pushState({}, '', `/cases/${id}`)
+    } else {
+      window.history.pushState({}, '', '/cases')
+    }
+  }, [])
+
+  // Navigation helpers for AI Assistant module
+  const navigateToAIAssistant = useCallback(() => {
+    setActiveNav('ai-assistant')
+    window.history.pushState({}, '', '/ai-assistant')
+  }, [])
+
   const navigateToHome = useCallback(() => {
     setActiveNav('home')
     setVehicleSubView('overview')
     setSelectedVehicleId(null)
     setDocumentsSubView('dashboard')
+    setCaseSubView('overview')
+    setSelectedCaseId(null)
     window.history.pushState({}, '', '/')
   }, [])
 
@@ -231,6 +207,23 @@ export default function App() {
       }
       loadDocuments()
       loadVehicles()
+    } else if (path.startsWith('/cases') || viewParam === 'cases') {
+      setActiveNav('cases')
+      const pathSuffix = path.replace(/^\/cases\/?/, '').trim()
+      const pathAction = pathSuffix.split('/')[0]
+
+      if (pathAction && pathAction.length > 0 && pathAction !== 'overview') {
+        setCaseSubView('workspace')
+        setSelectedCaseId(pathAction)
+      } else if (idParam) {
+        setCaseSubView('workspace')
+        setSelectedCaseId(idParam)
+      } else {
+        setCaseSubView('overview')
+        setSelectedCaseId(null)
+      }
+    } else if (path.startsWith('/ai-assistant') || viewParam === 'ai-assistant') {
+      setActiveNav('ai-assistant')
     } else if (path === '/' && !viewParam) {
       setActiveNav('home')
     }
@@ -285,21 +278,6 @@ export default function App() {
     }
   }, [user, loadVehicles, loadDocuments])
 
-  // Helper to ensure an active case exists before navigating to case views
-  const ensureCaseAndNavigate = async (tab: CaseTab, navId: NavItem) => {
-    if (!kase) {
-      try {
-        const cs = await api<CaseRow[]>('/api/cases')
-        if (cs && cs.length > 0) {
-          setKase(cs[0])
-        }
-      } catch (e) {
-        console.error(e)
-      }
-    }
-    setCaseTab(tab)
-    setActiveNav(navId)
-  }
 
   const handleNav = (nav: NavItem) => {
     if (nav === 'home') {
@@ -309,9 +287,9 @@ export default function App() {
     } else if (nav === 'documents') {
       navigateToDocuments('dashboard')
     } else if (nav === 'cases') {
-      ensureCaseAndNavigate('dashboard', 'cases')
+      navigateToCases('overview')
     } else if (nav === 'ai-assistant') {
-      ensureCaseAndNavigate('chat', 'ai-assistant')
+      navigateToAIAssistant()
     } else if (nav === 'profile') {
       setProfileModalOpen(true)
     }
@@ -343,9 +321,8 @@ export default function App() {
   }
 
   const handleCaseCreated = (newCase: any) => {
-    setKase(newCase)
-    setActiveNav('cases')
-    setCaseTab('dashboard')
+    const cId = newCase.case_id || 'case_demo'
+    navigateToCases('workspace', cId)
     refresh()
   }
 
@@ -356,8 +333,7 @@ export default function App() {
       const demo = cs.find(c => c.case_id === 'case_demo') || cs[0]
       if (demo) {
         setKase(demo)
-        setActiveNav('cases')
-        setCaseTab('dashboard')
+        navigateToCases('workspace', demo.case_id)
         refresh()
       }
     }).catch(() => {})
@@ -570,8 +546,8 @@ export default function App() {
     }
   }
 
-  // Check if current view is a Case workspace view
-  const isCaseView = ['cases', 'ai-assistant'].includes(activeNav) && !!kase
+  // Check if current view is legacy AI Assistant / MCP panel view
+  const isCaseView = activeNav === 'ai-assistant' && !!kase
 
   // Mapped options for selectors
   const vehicleOptions = vehicles.map(v => ({
@@ -660,8 +636,8 @@ export default function App() {
             onReportAccident={() => setReportModalOpen(true)}
             onOpenVehicles={() => navigateToVehicles('overview')}
             onOpenDocuments={() => navigateToDocuments('dashboard')}
-            onOpenCases={() => ensureCaseAndNavigate('dashboard', 'cases')}
-            onOpenAI={() => ensureCaseAndNavigate('chat', 'ai-assistant')}
+            onOpenCases={() => navigateToCases('overview')}
+            onOpenAI={navigateToAIAssistant}
             onOpenProfile={() => setProfileModalOpen(true)}
             onDemoStaged={handleDemoStaged}
           />
@@ -752,38 +728,37 @@ export default function App() {
           </>
         )}
 
-        {/* VIEW 4: Case Workspace View */}
-        {isCaseView && (
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
-            {caseTab === 'dashboard' && (
-              <Dashboard
-                caseId={kase.case_id}
-                tick={tick}
-                refresh={refresh}
-                goChat={() => {
-                  setCaseTab('chat')
-                  setActiveNav('ai-assistant')
-                }}
+        {/* VIEW 4: Dedicated Full-Screen Accident Cases Management Module */}
+        {activeNav === 'cases' && (
+          <>
+            {caseSubView === 'overview' && (
+              <CasesOverview
+                onOpenCase={(id) => navigateToCases('workspace', id)}
+                onReportAccident={() => setReportModalOpen(true)}
+                onBackHome={navigateToHome}
               />
             )}
-            {caseTab === 'chat' && <Chat caseId={kase.case_id} refresh={refresh} />}
-            {caseTab === 'documents' && <CaseDocuments caseId={kase.case_id} refresh={refresh} />}
-            {caseTab === 'tasks' && <Tasks caseId={kase.case_id} tick={tick} refresh={refresh} />}
-            {caseTab === 'report' && <ReportView caseId={kase.case_id} />}
-            {caseTab === 'mcp' && <McpPanel caseId={kase.case_id} />}
-          </div>
+
+            {caseSubView === 'workspace' && (
+              <CaseWorkspace
+                key={selectedCaseId || 'case_demo'}
+                caseId={selectedCaseId || 'case_demo'}
+                onBackToCases={() => navigateToCases('overview')}
+                onOpenVehicle={(vId) => navigateToVehicles(vId ? 'detail' : 'overview', vId)}
+                onBackHome={navigateToHome}
+              />
+            )}
+          </>
         )}
 
-        {/* Fallback if user clicked cases but no cases loaded yet */}
-        {activeNav !== 'home' && activeNav !== 'vehicles' && activeNav !== 'documents' && !kase && user && (
-          <CaseList
+        {/* VIEW 5: Ask Second Hour AI Assistant */}
+        {activeNav === 'ai-assistant' && (
+          <AssistantModule
             user={user}
-            onOpen={(c) => {
-              setKase(c)
-              setCaseTab('dashboard')
-              refresh()
-            }}
-            onNew={() => setReportModalOpen(true)}
+            onNavigateToVehicles={(vId) => navigateToVehicles(vId ? 'detail' : 'overview', vId)}
+            onNavigateToDocuments={() => navigateToDocuments('dashboard')}
+            onNavigateToCases={(caseId) => navigateToCases(caseId ? 'workspace' : 'overview', caseId)}
+            onBackHome={navigateToHome}
           />
         )}
       </main>
@@ -831,6 +806,7 @@ export default function App() {
         isOpen={reportModalOpen}
         onClose={() => setReportModalOpen(false)}
         onCaseCreated={handleCaseCreated}
+        vehicles={vehicleOptions}
       />
 
       <ProfileModal

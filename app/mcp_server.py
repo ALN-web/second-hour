@@ -63,11 +63,14 @@ def _run(fn, *args, **kwargs) -> dict[str, Any]:
 @mcp.tool(annotations=MUTATE, title="Create accident case")
 def create_accident_case(actor_id: str, incident_at: str, approximate_location: str,
                          life_threatening: bool = False, victim_display_name: str | None = None,
-                         hospital_name: str | None = None) -> dict[str, Any]:
+                         hospital_name: str | None = None, vehicle_id: str | None = None,
+                         accident_type: str | None = None, injury_severity: str | None = None,
+                         accident_description: str | None = None, damage_severity: str | None = None) -> dict[str, Any]:
     """Create a new accident case workspace. incident_at is ISO-8601 (e.g. 2026-11-23T16:00:00Z).
     Requires human approval. Returns case_id, case_number and status."""
     return _run(case_svc.create_case, actor_id, incident_at, approximate_location,
-                victim_display_name, hospital_name, life_threatening)
+                victim_display_name, hospital_name, life_threatening, vehicle_id,
+                accident_type, injury_severity, accident_description, damage_severity)
 
 
 @mcp.tool(annotations=READ, title="Get case summary")
