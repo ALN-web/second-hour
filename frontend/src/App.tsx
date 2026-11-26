@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, getUser, setUser, fmtTime } from './api'
-import { Dashboard, Chat, Documents, Tasks, ReportView, McpPanel } from './Views'
+import { Dashboard, Chat, Documents, Tasks, ReportView, McpPanel, McpTicker } from './Views'
 
 type User = { user_id: string; name: string; role_label: string }
 type CaseRow = { case_id: string; case_number: string; victim_display_name?: string; hospital_name?: string; incident_at: string }
@@ -23,27 +23,107 @@ function Banner() {
   )
 }
 
-function Login({ onLogin }: { onLogin: (u: User) => void }) {
+const STATS = [
+  { big: '₹1.5 lakh', label: 'cashless cover per victim', src: 'PIB, 11 Mar 2026' },
+  { big: '7 days', label: 'from the accident, maximum', src: 'PIB, 11 Mar 2026' },
+  { big: '3,674', label: 'victims discharged after no police response in time', src: 'PIB, 12 Aug 2026' },
+]
+const PILLARS = [
+  { t: 'Cited, never guessed', d: 'Scheme answers come only from official PIB text, with the source shown.' },
+  { t: 'Watches the clocks', d: 'Deterministic watchers flag the 7-day window, the ₹1.5 lakh cover and stalled police follow-ups.' },
+  { t: 'Agent proposes, family approves', d: 'Every change is an approval card. Nothing happens until a person clicks Approve.' },
+  { t: 'Open through MCP', d: 'Every capability is a real MCP server, so any AI host can help with the same live case.' },
+]
+
+function McpStatus() {
+  const [info, setInfo] = useState<any>(null)
+  useEffect(() => { api('/api/mcp/info').then(setInfo).catch(() => setInfo({ connected: false })) }, [])
+  if (!info) return <span className="chip bg-white/10 text-slate-200">Checking MCP server…</span>
+  return info.connected
+    ? <span className="chip bg-green-500/15 text-green-300 gap-1.5"><span className="h-2 w-2 rounded-full bg-green-400 animate-pulse" />MCP server live · {info.tools.length} tools · {info.resources.length} resources · {info.prompts.length} prompt</span>
+    : <span className="chip bg-red-500/15 text-red-300">MCP server not reachable on :8001</span>
+}
+
+function Login({ onLogin, onStaged }: { onLogin: (u: User) => void; onStaged: (u: User) => void }) {
   const [users, setUsers] = useState<User[]>([])
-  useEffect(() => { api<User[]>('/api/users').then(setUsers).catch(() => {}) }, [])
+  const [demo, setDemo] = useState(false)
+  const [busy, setBusy] = useState('')
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    api<User[]>('/api/users').then(setUsers).catch(() => {})
+    api<any>('/api/config').then(c => setDemo(!!c.demo)).catch(() => {})
+  }, [])
+  const stage = async (fresh: boolean) => {
+    setBusy(fresh ? 'fresh' : 'stage'); setErr('')
+    try {
+      await api(`/api/demo/stage${fresh ? '?fresh=true' : ''}`, { method: 'POST' })
+      const us = await api<User[]>('/api/users'); setUsers(us)
+      const priya = us.find(u => u.user_id === 'u_priya')
+      if (priya) { setUser(priya.user_id); onStaged(priya) }
+    } catch (e: any) { setErr(e.message) } finally { setBusy('') }
+  }
   return (
-    <div className="max-w-md mx-auto px-4 py-12">
-      <div className="text-center mb-8">
-        <div className="text-4xl font-bold text-navy-800">Second Hour</div>
-        <p className="text-slate-600 mt-2">One calm workspace for your family after a road accident.</p>
-      </div>
-      <div className="card space-y-3">
-        <div className="text-sm font-semibold text-slate-700">Continue as (demo users)</div>
-        {users.filter(u => u.user_id !== 'u_outsider').map(u => (
-          <button key={u.user_id} onClick={() => { setUser(u.user_id); onLogin(u) }}
-            className="w-full flex items-center gap-3 rounded-lg border border-slate-200 p-3 hover:border-navy-700 hover:bg-slate-50 text-left">
-            <div className="h-10 w-10 rounded-full bg-navy-800 text-white grid place-items-center font-bold">{u.name[0]}</div>
-            <div><div className="font-medium">{u.name}</div><div className="text-xs text-slate-500">{u.role_label}</div></div>
-          </button>
+    <div>
+      <section className="bg-navy-950 text-white">
+        <div className="max-w-5xl mx-auto px-4 py-10 lg:py-14 grid lg:grid-cols-5 gap-10 items-start">
+          <div className="lg:col-span-3">
+            <div className="flex flex-wrap gap-2 mb-5">
+              <span className="chip border border-accent-500 text-accent-500">wHACKiest 2026 · Track 1 · Make MCP Matter</span>
+              <McpStatus />
+            </div>
+            <h1 className="text-4xl sm:text-5xl font-bold leading-tight tracking-tight">
+              The first hour belongs to doctors.<br /><span className="text-accent-500">The second hour belongs to the family.</span>
+            </h1>
+            <p className="text-slate-300 mt-4 text-lg max-w-2xl">
+              Second Hour is one shared workspace and a careful AI agent for Indian families after a road accident:
+              PM-RAHAT, hospital bills, police follow-ups and documents, in one calm view.
+            </p>
+            <div className="grid sm:grid-cols-3 gap-3 mt-7">
+              {STATS.map(s => (
+                <div key={s.big} className="rounded-xl bg-white/5 border border-white/10 p-4">
+                  <div className="text-2xl font-bold text-white">{s.big}</div>
+                  <div className="text-sm text-slate-300 mt-1 leading-snug">{s.label}</div>
+                  <div className="text-[11px] text-slate-500 mt-2">{s.src}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="lg:col-span-2 space-y-3">
+            <div className="rounded-xl bg-white text-slate-800 p-5 shadow-xl space-y-3">
+              <div className="text-sm font-semibold text-slate-700">Continue as a family member</div>
+              {users.filter(u => u.user_id !== 'u_outsider').map(u => (
+                <button key={u.user_id} onClick={() => { setUser(u.user_id); onLogin(u) }}
+                  className="w-full flex items-center gap-3 rounded-lg border border-slate-200 p-3 hover:border-navy-700 hover:bg-slate-50 text-left">
+                  <div className="h-10 w-10 rounded-full bg-navy-800 text-white grid place-items-center font-bold">{u.name[0]}</div>
+                  <div><div className="font-medium">{u.name}</div><div className="text-xs text-slate-500">{u.role_label}</div></div>
+                </button>
+              ))}
+              {users.length === 0 && <div className="text-sm text-red-600">Cannot reach the agent host on :8000. Is it running?</div>}
+              <p className="text-xs text-slate-500">Synthetic demo data only. All people and documents are fictional.</p>
+            </div>
+            {demo && (
+              <div className="rounded-xl border border-dashed border-white/25 p-4">
+                <div className="text-xs uppercase tracking-wide text-slate-400">Presenter controls</div>
+                <p className="text-xs text-slate-400 mt-1">Stage the demo case as it looks a day after the accident: bill and medical report analysed through MCP, bill confirmed, police status recorded, clock +25 h. The approval step is left for you.</p>
+                <div className="flex gap-2 mt-3">
+                  <button className="btn-accent" disabled={!!busy} onClick={() => stage(false)}>{busy === 'stage' ? 'Staging via MCP…' : 'Stage demo case'}</button>
+                  <button className="btn border border-white/25 text-slate-200 hover:bg-white/10" disabled={!!busy} onClick={() => stage(true)}>{busy === 'fresh' ? 'Resetting…' : 'Start empty'}</button>
+                </div>
+                {err && <div className="text-xs text-red-300 mt-2">{err}</div>}
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+      <section className="max-w-5xl mx-auto px-4 py-8 grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {PILLARS.map((p, i) => (
+          <div key={p.t} className="card">
+            <div className="h-8 w-8 rounded-full bg-accent-500 text-white grid place-items-center text-sm font-bold">{i + 1}</div>
+            <div className="font-semibold text-navy-800 mt-3">{p.t}</div>
+            <div className="text-sm text-slate-600 mt-1">{p.d}</div>
+          </div>
         ))}
-        {users.length === 0 && <div className="text-sm text-red-600">Cannot reach the agent host on :8000. Is it running?</div>}
-      </div>
-      <p className="text-xs text-slate-500 mt-4 text-center">Synthetic demo data only.</p>
+      </section>
     </div>
   )
 }
@@ -140,8 +220,11 @@ export default function App() {
           </nav>
         )}
       </header>
-      <main className="flex-1">
-        {!user && <Login onLogin={setU} />}
+      <main className={`flex-1 ${user && kase && tab !== 'mcp' ? 'pb-56 sm:pb-10' : ''}`}>
+        {!user && <Login onLogin={setU} onStaged={u => {
+          setU(u)
+          api<CaseRow[]>('/api/cases').then(cs => { const c = cs.find(x => x.case_id === 'case_demo'); if (c) { setKase(c); setTab('dashboard'); refresh() } })
+        }} />}
         {user && !kase && <CaseList user={user} onOpen={c => { setKase(c); setTab('dashboard') }} />}
         {user && kase && (
           <div className="max-w-5xl mx-auto px-4 py-5">
@@ -154,6 +237,7 @@ export default function App() {
           </div>
         )}
       </main>
+      {user && kase && tab !== 'mcp' && <McpTicker caseId={kase.case_id} onOpen={() => setTab('mcp')} />}
       <footer className="text-center text-xs text-slate-500 py-4">Prepared by Second Hour · not legal advice · synthetic demo data</footer>
     </div>
   )

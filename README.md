@@ -61,6 +61,10 @@ The scheme runs on two clocks: the **7-day / ₹1.5 lakh cover**, and the **hosp
 
 ## 📸 A look inside
 
+<img src="docs/screenshots/landing.png" alt="Landing page: the second hour belongs to the family, PIB facts, live MCP server status and presenter controls" width="900"/>
+
+Every case screen also carries a **Live MCP calls** feed, so you can watch each tool call happen: read-only calls run automatically, writes wait for approval.
+
 <table>
 <tr>
 <td width="50%"><b>Agent: cited answers and approval cards</b><br/><img src="docs/screenshots/chat.png" alt="Agent chat with a PIB citation and an approval card"/></td>
@@ -222,6 +226,8 @@ npx @modelcontextprotocol/inspector
 Choose **Streamable HTTP**, enter `http://localhost:8001/mcp` and click Connect. Then call `get_case_alerts` with `{"actor_id":"u_priya","case_id":"case_demo"}`: **the same live case as the web app.** Claude Desktop and other remote-capable hosts can use the same URL; stdio-only hosts can bridge with `npx mcp-remote http://localhost:8001/mcp`.
 
 ## 🎬 90-second demo path
+
+> **Short on time?** On the landing page, **Stage demo case** resets the synthetic case and stages it as it looks a day after the accident (bill and report analysed through MCP, bill confirmed, police status recorded, clock +25 h), then skip to step 3. Presenter controls are on by default; set `DEMO_MODE=0` to turn them off.
 
 1. Log in as **Priya** and open **SH-2026-0001** (Ravi K, Bengaluru, incident last night at 9:30 PM).
 2. **Documents** → upload `demo_assets/sample_hospital_bill.pdf`. The fields appear as *Needs review*. **Confirm** the total, ₹1,24,000.

@@ -356,7 +356,46 @@ async def tts(body: TTSIn, user: User = Depends(current_user)):
 
 @app.get("/api/config")
 def ui_config():
-    return {"tts": bool(config.ELEVENLABS_API_KEY), "llm": bool(config.ANTHROPIC_API_KEY)}
+    return {"tts": bool(config.ELEVENLABS_API_KEY), "llm": bool(config.ANTHROPIC_API_KEY), "demo": config.DEMO_MODE}
+
+
+# ------------------------------------------------------------------ presenter controls (synthetic demo only)
+
+@app.post("/api/demo/stage")
+async def stage_demo(fresh: bool = False):
+    """Reset the synthetic demo case and, unless fresh=true, stage it the way a family would after a day:
+    bill + medical report uploaded and analysed through MCP, bill confirmed by Priya, police status
+    'requested by hospital', clock +25h. Leaves the approval step for the live demo."""
+    if not config.DEMO_MODE:
+        raise HTTPException(404, "Demo mode is off")
+    from scripts.seed import seed
+    seed()
+    if fresh:
+        return {"staged": False, "case_id": "case_demo"}
+    actor, cid = "u_priya", "case_demo"
+    ids = []
+    db = SessionLocal()
+    try:
+        for name in ("sample_hospital_bill.pdf", "sample_medical_report.pdf"):
+            data = (config.DEMO_ASSETS_DIR / name).read_bytes()
+            ids.append(doc_svc.save_upload(db, actor, cid, name, data)["document_id"])
+    finally:
+        db.close()
+    out, err = await M.call_once("analyze_case_documents", {"actor_id": actor, "case_id": cid, "document_ids": ids},
+                                 cid, actor, "auto_on_upload")
+    if err:
+        raise mcp_error(out)
+    db = SessionLocal()
+    try:
+        for d in doc_svc.list_documents(db, actor, cid):
+            if d.get("category") == "hospital_bill":
+                for f in d.get("fields", []):
+                    doc_svc.update_field(db, actor, cid, f["field_id"], None, True)
+        case_svc.set_police_status(db, actor, cid, "requested_by_hospital")
+        case_svc.advance_clock(db, actor, cid, 25)
+    finally:
+        db.close()
+    return {"staged": True, "case_id": cid}
 
 
 # ------------------------------------------------------------------ MCP panel

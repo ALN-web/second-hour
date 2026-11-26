@@ -19,6 +19,8 @@ MCP_PORT = int(os.getenv("MCP_PORT", "8001"))
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "claude-sonnet-5-5")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+# Presenter controls (reset + stage the synthetic demo case). Set DEMO_MODE=0 in any real deployment.
+DEMO_MODE = os.getenv("DEMO_MODE", "1") != "0"
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_multilingual_v2")
 

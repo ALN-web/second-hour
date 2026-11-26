@@ -489,3 +489,54 @@ export function McpPanel({ caseId }: { caseId: string }) {
     </div>
   )
 }
+
+const TICK_STYLE: Record<string, [string, string]> = {
+  auto_read_only: ['bg-slate-100 text-slate-700', 'read-only · auto'],
+  auto_on_upload: ['bg-blue-100 text-blue-800', 'ran on upload'],
+  user_requested: ['bg-blue-100 text-blue-800', 'user requested'],
+  proposed: ['bg-orange-100 text-orange-800', 'awaiting approval'],
+  approved: ['bg-green-100 text-green-800', 'approved by family'],
+  rejected: ['bg-slate-200 text-slate-600', 'rejected'],
+  error: ['bg-red-100 text-red-700', 'error'],
+}
+
+/** Floating live feed of MCP calls for this case, so the protocol is visible on every screen. */
+export function McpTicker({ caseId, onOpen }: { caseId: string; onOpen: () => void }) {
+  const [log, setLog] = useState<any[]>([])
+  const [open, setOpen] = useState(true)
+  const [fresh, setFresh] = useState<number | null>(null)
+  const top = useRef<number | null>(null)
+  useEffect(() => {
+    const f = () => api<any[]>(`/api/cases/${caseId}/activity`).then(rows => {
+      if (rows[0] && top.current !== null && rows[0].id !== top.current) { setFresh(rows[0].id); setTimeout(() => setFresh(null), 2500) }
+      top.current = rows[0]?.id ?? 0
+      setLog(rows.slice(0, 4))
+    }).catch(() => {})
+    f(); const t = setInterval(f, 2000); return () => clearInterval(t)
+  }, [caseId])
+  return (
+    <div className="fixed bottom-4 right-4 z-40 w-80 max-w-[calc(100vw-2rem)] rounded-xl bg-navy-950 text-white shadow-2xl border border-white/10">
+      <button className="w-full flex items-center gap-2 px-3 py-2 text-left" onClick={() => setOpen(o => !o)}>
+        <span className="h-2 w-2 rounded-full bg-green-400 animate-pulse" />
+        <span className="text-sm font-semibold">Live MCP calls</span>
+        <span className="text-[11px] text-slate-400">:8001/mcp</span>
+        <span className="flex-1" /><span className="text-xs text-slate-400">{open ? 'hide' : 'show'}</span>
+      </button>
+      {open && (
+        <div className="px-3 pb-3 space-y-1.5">
+          {log.map(l => {
+            const [cls, label] = TICK_STYLE[l.approval_state] || ['bg-slate-100 text-slate-700', l.approval_state]
+            return (
+              <div key={l.id} className={`rounded-lg px-2 py-1.5 transition-colors duration-700 ${fresh === l.id ? 'bg-accent-500/30' : 'bg-white/5'}`}>
+                <div className="flex items-center gap-2"><code className="text-xs font-semibold text-orange-200 truncate">{l.tool}</code><span className="flex-1" /><span className={`chip text-[10px] ${cls}`}>{label}</span></div>
+                <div className="text-[11px] text-slate-300 truncate">→ {l.result_summary}</div>
+              </div>
+            )
+          })}
+          {log.length === 0 && <div className="text-xs text-slate-400">No MCP calls yet for this case.</div>}
+          <button className="text-[11px] underline text-slate-300" onClick={onOpen}>Open MCP panel: tools, annotations, full audit log</button>
+        </div>
+      )}
+    </div>
+  )
+}
