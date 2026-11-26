@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, getUser, setUser, fmtTime } from './api'
 import { Dashboard, Chat, Documents, Tasks, ReportView, McpPanel, McpTicker } from './Views'
+import { Navbar, type NavItem } from './components/Navbar'
+import { Homepage } from './components/Homepage'
+import { ReportAccidentModal, VehiclesModal, ProfileModal, NotificationsModal } from './components/Modals'
 
 type User = { user_id: string; name: string; role_label: string }
 type CaseRow = { case_id: string; case_number: string; victim_display_name?: string; hospital_name?: string; incident_at: string }
 
-const TABS = [
+const CASE_TABS = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'chat', label: 'Agent' },
   { id: 'documents', label: 'Documents' },
@@ -13,160 +16,64 @@ const TABS = [
   { id: 'report', label: 'Report' },
   { id: 'mcp', label: 'MCP' },
 ] as const
-type Tab = (typeof TABS)[number]['id']
+type CaseTab = (typeof CASE_TABS)[number]['id']
 
-function Banner() {
+function EmergencyBanner() {
   return (
-    <div className="bg-accent-500 text-white text-xs sm:text-sm text-center px-3 py-1.5 font-medium" role="alert">
-      Second Hour is not an emergency service. In an emergency, call <a className="underline font-bold" href="tel:112">112</a>.
+    <div className="bg-accent-500 text-white text-xs sm:text-sm text-center px-4 py-1.5 font-medium flex items-center justify-center gap-2" role="alert">
+      <span>🚨 Second Hour is an assistance platform, not an emergency service. In an emergency, call</span>
+      <a className="underline font-bold bg-white/20 px-1.5 py-0.5 rounded hover:bg-white/30 transition" href="tel:112">112</a>
     </div>
   )
 }
 
-const STATS = [
-  { big: '₹1.5 lakh', label: 'cashless cover per victim', src: 'PIB, 11 Mar 2026' },
-  { big: '7 days', label: 'from the accident, maximum', src: 'PIB, 11 Mar 2026' },
-  { big: '3,674', label: 'victims discharged after no police response in time', src: 'PIB, 12 Aug 2026' },
-]
-const PILLARS = [
-  { t: 'Cited, never guessed', d: 'Scheme answers come only from official PIB text, with the source shown.' },
-  { t: 'Watches the clocks', d: 'Deterministic watchers flag the 7-day window, the ₹1.5 lakh cover and stalled police follow-ups.' },
-  { t: 'Agent proposes, family approves', d: 'Every change is an approval card. Nothing happens until a person clicks Approve.' },
-  { t: 'Open through MCP', d: 'Every capability is a real MCP server, so any AI host can help with the same live case.' },
-]
+function CaseList({ user, onOpen, onNew }: { user: User; onOpen: (c: CaseRow) => void; onNew: () => void }) {
+  const [cases, setCases] = useState<CaseRow[]>([])
+  const load = useCallback(() => { api<CaseRow[]>('/api/cases').then(setCases).catch(() => {}) }, [])
+  useEffect(load, [load])
 
-function McpStatus() {
-  const [info, setInfo] = useState<any>(null)
-  useEffect(() => { api('/api/mcp/info').then(setInfo).catch(() => setInfo({ connected: false })) }, [])
-  if (!info) return <span className="chip bg-white/10 text-slate-200">Checking MCP server…</span>
-  return info.connected
-    ? <span className="chip bg-green-500/15 text-green-300 gap-1.5"><span className="h-2 w-2 rounded-full bg-green-400 animate-pulse" />MCP server live · {info.tools.length} tools · {info.resources.length} resources · {info.prompts.length} prompt</span>
-    : <span className="chip bg-red-500/15 text-red-300">MCP server not reachable on :8001</span>
-}
-
-function Login({ onLogin, onStaged }: { onLogin: (u: User) => void; onStaged: (u: User) => void }) {
-  const [users, setUsers] = useState<User[]>([])
-  const [demo, setDemo] = useState(false)
-  const [busy, setBusy] = useState('')
-  const [err, setErr] = useState('')
-  useEffect(() => {
-    api<User[]>('/api/users').then(setUsers).catch(() => {})
-    api<any>('/api/config').then(c => setDemo(!!c.demo)).catch(() => {})
-  }, [])
-  const stage = async (fresh: boolean) => {
-    setBusy(fresh ? 'fresh' : 'stage'); setErr('')
-    try {
-      await api(`/api/demo/stage${fresh ? '?fresh=true' : ''}`, { method: 'POST' })
-      const us = await api<User[]>('/api/users'); setUsers(us)
-      const priya = us.find(u => u.user_id === 'u_priya')
-      if (priya) { setUser(priya.user_id); onStaged(priya) }
-    } catch (e: any) { setErr(e.message) } finally { setBusy('') }
-  }
   return (
-    <div>
-      <section className="bg-navy-950 text-white">
-        <div className="max-w-5xl mx-auto px-4 py-10 lg:py-14 grid lg:grid-cols-5 gap-10 items-start">
-          <div className="lg:col-span-3">
-            <div className="flex flex-wrap gap-2 mb-5">
-              <span className="chip border border-accent-500 text-accent-500">wHACKiest 2026 · Track 1 · Make MCP Matter</span>
-              <McpStatus />
-            </div>
-            <h1 className="text-4xl sm:text-5xl font-bold leading-tight tracking-tight">
-              The first hour belongs to doctors.<br /><span className="text-accent-500">The second hour belongs to the family.</span>
-            </h1>
-            <p className="text-slate-300 mt-4 text-lg max-w-2xl">
-              Second Hour is one shared workspace and a careful AI agent for Indian families after a road accident:
-              PM-RAHAT, hospital bills, police follow-ups and documents, in one calm view.
-            </p>
-            <div className="grid sm:grid-cols-3 gap-3 mt-7">
-              {STATS.map(s => (
-                <div key={s.big} className="rounded-xl bg-white/5 border border-white/10 p-4">
-                  <div className="text-2xl font-bold text-white">{s.big}</div>
-                  <div className="text-sm text-slate-300 mt-1 leading-snug">{s.label}</div>
-                  <div className="text-[11px] text-slate-500 mt-2">{s.src}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="lg:col-span-2 space-y-3">
-            <div className="rounded-xl bg-white text-slate-800 p-5 shadow-xl space-y-3">
-              <div className="text-sm font-semibold text-slate-700">Continue as a family member</div>
-              {users.filter(u => u.user_id !== 'u_outsider').map(u => (
-                <button key={u.user_id} onClick={() => { setUser(u.user_id); onLogin(u) }}
-                  className="w-full flex items-center gap-3 rounded-lg border border-slate-200 p-3 hover:border-navy-700 hover:bg-slate-50 text-left">
-                  <div className="h-10 w-10 rounded-full bg-navy-800 text-white grid place-items-center font-bold">{u.name[0]}</div>
-                  <div><div className="font-medium">{u.name}</div><div className="text-xs text-slate-500">{u.role_label}</div></div>
-                </button>
-              ))}
-              {users.length === 0 && <div className="text-sm text-red-600">Cannot reach the agent host on :8000. Is it running?</div>}
-              <p className="text-xs text-slate-500">Synthetic demo data only. All people and documents are fictional.</p>
-            </div>
-            {demo && (
-              <div className="rounded-xl border border-dashed border-white/25 p-4">
-                <div className="text-xs uppercase tracking-wide text-slate-400">Presenter controls</div>
-                <p className="text-xs text-slate-400 mt-1">Stage the demo case as it looks a day after the accident: bill and medical report analysed through MCP, bill confirmed, police status recorded, clock +25 h. The approval step is left for you.</p>
-                <div className="flex gap-2 mt-3">
-                  <button className="btn-accent" disabled={!!busy} onClick={() => stage(false)}>{busy === 'stage' ? 'Staging via MCP…' : 'Stage demo case'}</button>
-                  <button className="btn border border-white/25 text-slate-200 hover:bg-white/10" disabled={!!busy} onClick={() => stage(true)}>{busy === 'fresh' ? 'Resetting…' : 'Start empty'}</button>
-                </div>
-                {err && <div className="text-xs text-red-300 mt-2">{err}</div>}
-              </div>
-            )}
-          </div>
+    <div className="max-w-3xl mx-auto px-4 py-8 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-navy-950">Accident Cases</h1>
+          <p className="text-xs text-slate-500">Active and past cases coordinated by {user.name}</p>
         </div>
-      </section>
-      <section className="max-w-5xl mx-auto px-4 py-8 grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        {PILLARS.map((p, i) => (
-          <div key={p.t} className="card">
-            <div className="h-8 w-8 rounded-full bg-accent-500 text-white grid place-items-center text-sm font-bold">{i + 1}</div>
-            <div className="font-semibold text-navy-800 mt-3">{p.t}</div>
-            <div className="text-sm text-slate-600 mt-1">{p.d}</div>
+        <button className="btn-accent text-xs" onClick={onNew}>+ Report New Accident</button>
+      </div>
+
+      <div className="space-y-3">
+        {cases.map(c => (
+          <div
+            key={c.case_id}
+            onClick={() => onOpen(c)}
+            className="card p-4 hover:border-navy-700 hover:shadow-md transition cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+          >
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-navy-900 text-base">{c.case_number}</span>
+                <span className="chip bg-emerald-50 text-emerald-700 text-[11px] font-semibold border border-emerald-200">PM-RAHAT Active</span>
+              </div>
+              <div className="text-sm text-slate-700 mt-1 font-medium">
+                Victim: {c.victim_display_name || 'Ravi Kumar'} · Hospital: {c.hospital_name || 'Sample City Hospital'}
+              </div>
+              <div className="text-xs text-slate-400 mt-0.5">
+                Incident: {fmtTime(c.incident_at)} IST
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 self-end sm:self-center">
+              <span className="text-xs font-semibold text-accent-500 group-hover:underline">Open Workspace →</span>
+            </div>
           </div>
         ))}
-      </section>
-    </div>
-  )
-}
 
-function CaseList({ user, onOpen }: { user: User; onOpen: (c: CaseRow) => void }) {
-  const [cases, setCases] = useState<CaseRow[]>([])
-  const [show, setShow] = useState(false)
-  const [form, setForm] = useState({ incident_at: '', approximate_location: '', victim_display_name: '', hospital_name: '', life_threatening: false })
-  const [err, setErr] = useState('')
-  const load = useCallback(() => { api<CaseRow[]>('/api/cases').then(setCases) }, [])
-  useEffect(load, [load])
-  const create = async () => {
-    setErr('')
-    try {
-      await api('/api/cases', { body: { ...form, incident_at: new Date(form.incident_at).toISOString() } })
-      setShow(false); load()
-    } catch (e: any) { setErr(e.message) }
-  }
-  return (
-    <div className="max-w-2xl mx-auto px-4 py-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-navy-800">Your cases, {user.name}</h1>
-        <button className="btn-ghost" onClick={() => setShow(s => !s)}>+ New case</button>
+        {cases.length === 0 && (
+          <div className="card text-center py-8 text-sm text-slate-500">
+            No active cases found. Click "Report New Accident" to create a case.
+          </div>
+        )}
       </div>
-      {show && (
-        <div className="card space-y-2">
-          <label className="text-xs text-slate-600">Incident date & time</label>
-          <input className="input" type="datetime-local" value={form.incident_at} onChange={e => setForm({ ...form, incident_at: e.target.value })} />
-          <input className="input" placeholder="Approximate location" value={form.approximate_location} onChange={e => setForm({ ...form, approximate_location: e.target.value })} />
-          <input className="input" placeholder="Victim display name (optional)" value={form.victim_display_name} onChange={e => setForm({ ...form, victim_display_name: e.target.value })} />
-          <input className="input" placeholder="Hospital (optional)" value={form.hospital_name} onChange={e => setForm({ ...form, hospital_name: e.target.value })} />
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.life_threatening} onChange={e => setForm({ ...form, life_threatening: e.target.checked })} /> Doctors said it is life-threatening</label>
-          {err && <div className="text-sm text-red-600">{err}</div>}
-          <button className="btn-primary" onClick={create} disabled={!form.incident_at || !form.approximate_location}>Create case (via MCP)</button>
-        </div>
-      )}
-      {cases.map(c => (
-        <button key={c.case_id} onClick={() => onOpen(c)} className="card w-full text-left hover:border-navy-700">
-          <div className="flex justify-between"><span className="font-semibold text-navy-800">{c.case_number}</span><span className="text-xs text-slate-500">Incident {fmtTime(c.incident_at)}</span></div>
-          <div className="text-sm text-slate-600 mt-1">{c.victim_display_name || 'Unnamed'} · {c.hospital_name || 'Hospital not set'}</div>
-        </button>
-      ))}
-      {cases.length === 0 && <div className="text-sm text-slate-500">No cases yet.</div>}
     </div>
   )
 }
@@ -174,71 +81,271 @@ function CaseList({ user, onOpen }: { user: User; onOpen: (c: CaseRow) => void }
 export default function App() {
   const [user, setU] = useState<User | null>(null)
   const [kase, setKase] = useState<CaseRow | null>(null)
-  const [tab, setTab] = useState<Tab>('dashboard')
+  const [activeNav, setActiveNav] = useState<NavItem>('home')
+  const [caseTab, setCaseTab] = useState<CaseTab>('dashboard')
   const [tick, setTick] = useState(0)
+
+  // Modals state
+  const [reportModalOpen, setReportModalOpen] = useState(false)
+  const [vehiclesModalOpen, setVehiclesModalOpen] = useState(false)
+  const [profileModalOpen, setProfileModalOpen] = useState(false)
+  const [notificationsModalOpen, setNotificationsModalOpen] = useState(false)
+
   const refresh = () => setTick(t => t + 1)
 
+  // Initialize and handle URL params
   useEffect(() => {
-    // Deep link for demos: ?as=u_priya&case=case_demo&tab=chat
     const q = new URLSearchParams(location.search)
-    if (q.get('as')) setUser(q.get('as')!)
-    const id = getUser()
-    if (!id) return
-    api<User[]>('/api/users').then(us => {
-      const u = us.find(x => x.user_id === id)
-      if (!u) return
-      setU(u)
-      const want = q.get('case')
-      if (want) api<CaseRow[]>('/api/cases').then(cs => {
-        const c = cs.find(x => x.case_id === want)
-        if (c) { setKase(c); const t = q.get('tab'); if (t && TABS.some(x => x.id === t)) setTab(t as Tab) }
-      })
+    const asUser = q.get('as')
+    if (asUser) setUser(asUser)
+
+    api<User[]>('/api/users').then((us) => {
+      let currentId = getUser()
+      // Default to Priya if no user selected
+      if (!currentId && us.length > 0) {
+        currentId = us[0].user_id
+        setUser(currentId)
+      }
+      const matchedUser = us.find(x => x.user_id === currentId) || us[0] || null
+      setU(matchedUser)
+
+      const wantCase = q.get('case')
+      const wantTab = q.get('tab')
+
+      if (wantCase) {
+        api<CaseRow[]>('/api/cases').then((cs) => {
+          const c = cs.find(x => x.case_id === wantCase)
+          if (c) {
+            setKase(c)
+            setActiveNav('cases')
+            if (wantTab && CASE_TABS.some(x => x.id === wantTab)) {
+              setCaseTab(wantTab as CaseTab)
+            }
+          }
+        }).catch(() => {})
+      }
     }).catch(() => {})
   }, [])
 
-  const logout = () => { setUser(''); setU(null); setKase(null) }
+  // Helper to ensure an active case exists before navigating to case views
+  const ensureCaseAndNavigate = async (tab: CaseTab, navId: NavItem) => {
+    if (!kase) {
+      try {
+        const cs = await api<CaseRow[]>('/api/cases')
+        if (cs && cs.length > 0) {
+          setKase(cs[0])
+        }
+      } catch (e) {
+        console.error(e)
+      }
+    }
+    setCaseTab(tab)
+    setActiveNav(navId)
+  }
+
+  const handleNav = (nav: NavItem) => {
+    if (nav === 'home') {
+      setActiveNav('home')
+    } else if (nav === 'cases') {
+      ensureCaseAndNavigate('dashboard', 'cases')
+    } else if (nav === 'documents') {
+      ensureCaseAndNavigate('documents', 'documents')
+    } else if (nav === 'ai-assistant') {
+      ensureCaseAndNavigate('chat', 'ai-assistant')
+    } else if (nav === 'vehicles') {
+      setVehiclesModalOpen(true)
+    } else if (nav === 'profile') {
+      setProfileModalOpen(true)
+    }
+  }
+
+  const switchUser = async () => {
+    try {
+      const us = await api<User[]>('/api/users')
+      if (us.length > 1) {
+        const next = us.find(u => u.user_id !== user?.user_id) || us[0]
+        setUser(next.user_id)
+        setU(next)
+      }
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
+  const logout = () => {
+    setUser('')
+    setU(null)
+    setKase(null)
+    setActiveNav('home')
+  }
+
+  const handleCaseCreated = (newCase: any) => {
+    setKase(newCase)
+    setActiveNav('cases')
+    setCaseTab('dashboard')
+    refresh()
+  }
+
+  const handleDemoStaged = (priyaUser: User) => {
+    setU(priyaUser)
+    api<CaseRow[]>('/api/cases').then((cs) => {
+      const demo = cs.find(c => c.case_id === 'case_demo') || cs[0]
+      if (demo) {
+        setKase(demo)
+        setActiveNav('cases')
+        setCaseTab('dashboard')
+        refresh()
+      }
+    }).catch(() => {})
+  }
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <Banner />
-      <header className="bg-navy-900 text-white">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
-          <button className="font-bold text-lg tracking-tight" onClick={() => setKase(null)}>Second Hour</button>
-          {kase && <span className="chip bg-navy-700 text-white">{kase.case_number}</span>}
-          <div className="flex-1" />
-          {user && <span className="text-sm text-slate-300">{user.name}</span>}
-          {user && <button className="text-xs underline text-slate-300" onClick={logout}>Switch user</button>}
+    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800 font-sans antialiased">
+      {/* Top Banner */}
+      <EmergencyBanner />
+
+      {/* Top Navigation Bar */}
+      <Navbar
+        activeNav={activeNav}
+        onNavigate={handleNav}
+        user={user}
+        onSwitchUser={switchUser}
+        onLogout={logout}
+        onOpenNotifications={() => setNotificationsModalOpen(true)}
+        onOpenProfile={() => setProfileModalOpen(true)}
+        onOpenVehicles={() => setVehiclesModalOpen(true)}
+        activeCaseNumber={kase?.case_number}
+      />
+
+      {/* Case Sub-Navigation Bar (shown when inside case workspace) */}
+      {activeNav !== 'home' && kase && (
+        <div className="bg-navy-900 border-b border-navy-800 text-white">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="flex items-center justify-between py-2 border-b border-navy-800/80 text-xs text-slate-400">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setActiveNav('home')}
+                  className="hover:text-white transition flex items-center gap-1 cursor-pointer"
+                >
+                  <span>←</span> <span>Back to Home</span>
+                </button>
+                <span>/</span>
+                <span className="text-white font-medium">{kase.case_number}</span>
+                <span>({kase.victim_display_name || 'Ravi Kumar'})</span>
+              </div>
+              <div className="hidden sm:block text-slate-400">
+                Hospital: <span className="text-slate-200">{kase.hospital_name || 'City Hospital'}</span>
+              </div>
+            </div>
+
+            <nav className="flex gap-1 overflow-x-auto py-1">
+              {CASE_TABS.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => {
+                    setCaseTab(t.id)
+                    if (t.id === 'documents') setActiveNav('documents')
+                    else if (t.id === 'chat') setActiveNav('ai-assistant')
+                    else setActiveNav('cases')
+                  }}
+                  className={`px-3.5 py-2 text-xs sm:text-sm font-medium whitespace-nowrap border-b-2 transition-all cursor-pointer ${
+                    caseTab === t.id
+                      ? 'border-accent-500 text-white bg-white/10 rounded-t-lg'
+                      : 'border-transparent text-slate-300 hover:text-white hover:bg-white/5 rounded-t-lg'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </nav>
+          </div>
         </div>
-        {kase && (
-          <nav className="max-w-5xl mx-auto px-2 flex gap-1 overflow-x-auto">
-            {TABS.map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)}
-                className={`px-3 py-2 text-sm whitespace-nowrap border-b-2 ${tab === t.id ? 'border-accent-500 text-white' : 'border-transparent text-slate-300 hover:text-white'}`}>
-                {t.label}
-              </button>
-            ))}
-          </nav>
+      )}
+
+      {/* Main Content Area */}
+      <main className={`flex-1 ${activeNav !== 'home' && kase && caseTab !== 'mcp' ? 'pb-48 sm:pb-24' : ''}`}>
+        
+        {/* VIEW 1: Homepage */}
+        {activeNav === 'home' && (
+          <Homepage
+            user={user}
+            onReportAccident={() => setReportModalOpen(true)}
+            onOpenVehicles={() => setVehiclesModalOpen(true)}
+            onOpenDocuments={() => ensureCaseAndNavigate('documents', 'documents')}
+            onOpenCases={() => ensureCaseAndNavigate('dashboard', 'cases')}
+            onOpenAI={() => ensureCaseAndNavigate('chat', 'ai-assistant')}
+            onOpenProfile={() => setProfileModalOpen(true)}
+            onDemoStaged={handleDemoStaged}
+          />
         )}
-      </header>
-      <main className={`flex-1 ${user && kase && tab !== 'mcp' ? 'pb-56 sm:pb-10' : ''}`}>
-        {!user && <Login onLogin={setU} onStaged={u => {
-          setU(u)
-          api<CaseRow[]>('/api/cases').then(cs => { const c = cs.find(x => x.case_id === 'case_demo'); if (c) { setKase(c); setTab('dashboard'); refresh() } })
-        }} />}
-        {user && !kase && <CaseList user={user} onOpen={c => { setKase(c); setTab('dashboard') }} />}
-        {user && kase && (
-          <div className="max-w-5xl mx-auto px-4 py-5">
-            {tab === 'dashboard' && <Dashboard caseId={kase.case_id} tick={tick} refresh={refresh} goChat={() => setTab('chat')} />}
-            {tab === 'chat' && <Chat caseId={kase.case_id} refresh={refresh} />}
-            {tab === 'documents' && <Documents caseId={kase.case_id} refresh={refresh} />}
-            {tab === 'tasks' && <Tasks caseId={kase.case_id} tick={tick} refresh={refresh} />}
-            {tab === 'report' && <ReportView caseId={kase.case_id} />}
-            {tab === 'mcp' && <McpPanel caseId={kase.case_id} />}
+
+        {/* VIEW 2: Case Workspace View */}
+        {activeNav !== 'home' && kase && (
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
+            {caseTab === 'dashboard' && (
+              <Dashboard
+                caseId={kase.case_id}
+                tick={tick}
+                refresh={refresh}
+                goChat={() => {
+                  setCaseTab('chat')
+                  setActiveNav('ai-assistant')
+                }}
+              />
+            )}
+            {caseTab === 'chat' && <Chat caseId={kase.case_id} refresh={refresh} />}
+            {caseTab === 'documents' && <Documents caseId={kase.case_id} refresh={refresh} />}
+            {caseTab === 'tasks' && <Tasks caseId={kase.case_id} tick={tick} refresh={refresh} />}
+            {caseTab === 'report' && <ReportView caseId={kase.case_id} />}
+            {caseTab === 'mcp' && <McpPanel caseId={kase.case_id} />}
           </div>
         )}
+
+        {/* Fallback if user clicked cases but no cases loaded yet */}
+        {activeNav !== 'home' && !kase && user && (
+          <CaseList
+            user={user}
+            onOpen={(c) => {
+              setKase(c)
+              setCaseTab('dashboard')
+              refresh()
+            }}
+            onNew={() => setReportModalOpen(true)}
+          />
+        )}
       </main>
-      {user && kase && tab !== 'mcp' && <McpTicker caseId={kase.case_id} onOpen={() => setTab('mcp')} />}
-      <footer className="text-center text-xs text-slate-500 py-4">Prepared by Second Hour · not legal advice · synthetic demo data</footer>
+
+      {/* MCP Live Activity Ticker (displayed during case operations) */}
+      {activeNav !== 'home' && kase && caseTab !== 'mcp' && (
+        <McpTicker
+          caseId={kase.case_id}
+          onOpen={() => setCaseTab('mcp')}
+        />
+      )}
+
+      {/* Modals */}
+      <ReportAccidentModal
+        isOpen={reportModalOpen}
+        onClose={() => setReportModalOpen(false)}
+        onCaseCreated={handleCaseCreated}
+      />
+
+      <VehiclesModal
+        isOpen={vehiclesModalOpen}
+        onClose={() => setVehiclesModalOpen(false)}
+      />
+
+      <ProfileModal
+        isOpen={profileModalOpen}
+        onClose={() => setProfileModalOpen(false)}
+        userName={user?.name}
+        roleLabel={user?.role_label}
+      />
+
+      <NotificationsModal
+        isOpen={notificationsModalOpen}
+        onClose={() => setNotificationsModalOpen(false)}
+      />
     </div>
   )
 }
