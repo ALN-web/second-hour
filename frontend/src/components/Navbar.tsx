@@ -10,7 +10,7 @@ interface NavbarProps {
   onSwitchUser: () => void
   onLogout: () => void
   onOpenNotifications: () => void
-  onOpenProfile: () => void
+  onOpenProfile?: () => void
   onOpenVehicles: () => void
   activeCaseNumber?: string | null
 }
@@ -22,7 +22,6 @@ export function Navbar({
   onSwitchUser,
   onLogout,
   onOpenNotifications,
-  onOpenProfile,
   onOpenVehicles,
   activeCaseNumber,
 }: NavbarProps) {
@@ -42,7 +41,7 @@ export function Navbar({
 
   const navLinks: { id: NavItem; label: string; action?: () => void }[] = [
     { id: 'home', label: 'Home' },
-    { id: 'profile', label: 'My Profile', action: onOpenProfile },
+    { id: 'profile', label: 'My Profile' },
     { id: 'vehicles', label: 'My Vehicles', action: onOpenVehicles },
     { id: 'cases', label: 'My Cases' },
     { id: 'documents', label: 'Documents' },
@@ -150,7 +149,7 @@ export function Navbar({
                   </div>
 
                   <button
-                    onClick={() => { onOpenProfile(); setDropdownOpen(false) }}
+                    onClick={() => { onNavigate('profile'); setDropdownOpen(false) }}
                     className="w-full text-left px-4 py-2 text-xs hover:bg-slate-50 font-medium text-slate-700 flex items-center gap-2"
                   >
                     <span>👤</span> My Profile

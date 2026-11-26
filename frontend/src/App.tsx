@@ -3,7 +3,7 @@ import { api, getUser, setUser } from './api'
 import { McpTicker } from './Views'
 import { Navbar, type NavItem } from './components/Navbar'
 import { Homepage } from './components/Homepage'
-import { ReportAccidentModal, ProfileModal, NotificationsModal } from './components/Modals'
+import { ReportAccidentModal, NotificationsModal } from './components/Modals'
 import { VehiclesOverview } from './vehicles/VehiclesOverview'
 import { VehicleDetails } from './vehicles/VehicleDetails'
 import { AddVehicleWizard } from './vehicles/AddVehicleWizard'
@@ -15,6 +15,7 @@ import { ReplaceFileModal } from './documents/ReplaceFileModal'
 import { CasesOverview } from './cases/CasesOverview'
 import { CaseWorkspace } from './cases/CaseWorkspace'
 import { AssistantModule } from './assistant/AssistantModule'
+import { ProfileDashboard } from './profile/ProfileDashboard'
 import type { VehicleSummary, VehicleDetail, VehicleFormData } from './vehicles/types'
 import type { DocumentItem, DocumentSummary, UploadDocumentFormData } from './documents/types'
 
@@ -70,7 +71,6 @@ export default function App() {
 
   // Modals state
   const [reportModalOpen, setReportModalOpen] = useState(false)
-  const [profileModalOpen, setProfileModalOpen] = useState(false)
   const [notificationsModalOpen, setNotificationsModalOpen] = useState(false)
 
   const refresh = () => setTick(t => t + 1)
@@ -160,6 +160,12 @@ export default function App() {
     window.history.pushState({}, '', '/ai-assistant')
   }, [])
 
+  // Navigation helpers for Profile module
+  const navigateToProfile = useCallback(() => {
+    setActiveNav('profile')
+    window.history.pushState({}, '', '/profile')
+  }, [])
+
   const navigateToHome = useCallback(() => {
     setActiveNav('home')
     setVehicleSubView('overview')
@@ -224,6 +230,8 @@ export default function App() {
       }
     } else if (path.startsWith('/ai-assistant') || viewParam === 'ai-assistant') {
       setActiveNav('ai-assistant')
+    } else if (path.startsWith('/profile') || viewParam === 'profile') {
+      setActiveNav('profile')
     } else if (path === '/' && !viewParam) {
       setActiveNav('home')
     }
@@ -291,7 +299,7 @@ export default function App() {
     } else if (nav === 'ai-assistant') {
       navigateToAIAssistant()
     } else if (nav === 'profile') {
-      setProfileModalOpen(true)
+      navigateToProfile()
     }
   }
 
@@ -577,7 +585,7 @@ export default function App() {
         onSwitchUser={switchUser}
         onLogout={logout}
         onOpenNotifications={() => setNotificationsModalOpen(true)}
-        onOpenProfile={() => setProfileModalOpen(true)}
+        onOpenProfile={navigateToProfile}
         onOpenVehicles={() => navigateToVehicles('overview')}
         activeCaseNumber={kase?.case_number}
       />
@@ -638,7 +646,7 @@ export default function App() {
             onOpenDocuments={() => navigateToDocuments('dashboard')}
             onOpenCases={() => navigateToCases('overview')}
             onOpenAI={navigateToAIAssistant}
-            onOpenProfile={() => setProfileModalOpen(true)}
+            onOpenProfile={navigateToProfile}
             onDemoStaged={handleDemoStaged}
           />
         )}
@@ -761,6 +769,17 @@ export default function App() {
             onBackHome={navigateToHome}
           />
         )}
+
+        {/* VIEW 6: My Profile - Personal Information & Emergency Management */}
+        {activeNav === 'profile' && (
+          <ProfileDashboard
+            user={user}
+            onBackHome={navigateToHome}
+            onNavigateToVehicles={() => navigateToVehicles('overview')}
+            onNavigateToDocuments={() => navigateToDocuments('dashboard')}
+            onNavigateToCases={() => navigateToCases('overview')}
+          />
+        )}
       </main>
 
       {/* MCP Live Activity Ticker (displayed during case operations) */}
@@ -807,13 +826,6 @@ export default function App() {
         onClose={() => setReportModalOpen(false)}
         onCaseCreated={handleCaseCreated}
         vehicles={vehicleOptions}
-      />
-
-      <ProfileModal
-        isOpen={profileModalOpen}
-        onClose={() => setProfileModalOpen(false)}
-        userName={user?.name}
-        roleLabel={user?.role_label}
       />
 
       <NotificationsModal

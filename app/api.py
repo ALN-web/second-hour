@@ -25,6 +25,7 @@ from app.services import central_documents as central_docs_svc
 from app.services import documents as doc_svc
 from app.services import vehicles as veh_svc
 from app.services import assistant as asst_svc
+from app.services import profile as profile_svc
 from app.services.common import PermissionDenied, ServiceError, iso, require_member
 
 app = FastAPI(title="Second Hour agent host")
@@ -908,6 +909,188 @@ def send_ai_message(conv_id: str, body: AssistantMessagePayload, user: User = De
 @app.post("/api/ai/actions/execute")
 def execute_ai_action(body: AssistantActionPayload, user: User = Depends(current_user), db=Depends(get_db)):
     return asst_svc.execute_assistant_action(db, user.id, body.action_type, body.payload)
+
+
+# ------------------------------------------------------------------ My Profile & Emergency Management
+
+class PersonalInfoPayload(BaseModel):
+    name: str | None = None
+    gender: str | None = None
+    date_of_birth: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    preferred_language: str | None = None
+    profile_photo: str | None = None
+
+
+class VerifyRequestPayload(BaseModel):
+    channel: str  # email | phone
+
+
+class VerifyConfirmPayload(BaseModel):
+    channel: str
+    otp: str
+
+
+class EmergencyContactPayload(BaseModel):
+    full_name: str
+    relationship: str
+    mobile_number: str
+    alternate_number: str | None = None
+    email: str | None = None
+    priority: int | None = None
+    is_primary: bool = False
+    preferred_contact_method: str = "phone"
+    permissions: dict = {}
+
+
+class ReorderContactsPayload(BaseModel):
+    ordered_ids: list[str]
+
+
+class MedicalInfoPayload(BaseModel):
+    blood_group: str | None = None
+    allergies: str | None = None
+    medical_conditions: str | None = None
+    medications: str | None = None
+    emergency_notes: str | None = None
+    share_with_ems: bool = False
+    share_with_ai: bool = False
+
+
+class AddressPayload(BaseModel):
+    address_line_1: str | None = None
+    address_line_2: str | None = None
+    city: str | None = None
+    state: str | None = None
+    pin_code: str | None = None
+    country: str = "India"
+    is_same_as_current: bool = False
+
+
+class ChangePasswordPayload(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class DeleteAccountPayload(BaseModel):
+    confirmation: str
+
+
+@app.get("/api/profile")
+def get_user_profile(user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.get_profile(db, user.id)
+
+
+@app.patch("/api/profile")
+def update_user_profile(body: PersonalInfoPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.update_personal_info(db, user.id, body.model_dump(exclude_unset=True))
+
+
+@app.post("/api/profile/verify/request-otp")
+def request_profile_otp(body: VerifyRequestPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.request_verification_otp(db, user.id, body.channel)
+
+
+@app.post("/api/profile/verify/confirm-otp")
+def confirm_profile_otp(body: VerifyConfirmPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.confirm_verification_otp(db, user.id, body.channel, body.otp)
+
+
+@app.get("/api/profile/contacts")
+def list_contacts(user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.list_emergency_contacts(db, user.id)
+
+
+@app.post("/api/profile/contacts")
+def create_contact(body: EmergencyContactPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.add_emergency_contact(db, user.id, body.model_dump())
+
+
+@app.patch("/api/profile/contacts/{contact_id}")
+def update_contact(contact_id: str, body: dict, user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.update_emergency_contact(db, user.id, contact_id, body)
+
+
+@app.delete("/api/profile/contacts/{contact_id}")
+def delete_contact(contact_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    profile_svc.delete_emergency_contact(db, user.id, contact_id)
+    return {"ok": True}
+
+
+@app.post("/api/profile/contacts/{contact_id}/primary")
+def make_primary_contact(contact_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.set_primary_contact(db, user.id, contact_id)
+
+
+@app.post("/api/profile/contacts/reorder")
+def reorder_contacts(body: ReorderContactsPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.reorder_emergency_contacts(db, user.id, body.ordered_ids)
+
+
+@app.get("/api/profile/medical")
+def get_medical(user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.get_medical_info(db, user.id)
+
+
+@app.patch("/api/profile/medical")
+def update_medical(body: MedicalInfoPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.update_medical_info(db, user.id, body.model_dump(exclude_unset=True))
+
+
+@app.delete("/api/profile/medical")
+def clear_medical(user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.clear_medical_info(db, user.id)
+
+
+@app.get("/api/profile/addresses")
+def get_user_addresses(user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.get_addresses(db, user.id)
+
+
+@app.post("/api/profile/addresses/{address_type}")
+def save_user_address(address_type: str, body: AddressPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.save_address(db, user.id, address_type, body.model_dump())
+
+
+@app.get("/api/profile/identity-documents")
+def get_identity_docs(user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.get_identity_documents(db, user.id)
+
+
+@app.get("/api/profile/privacy")
+def get_privacy(user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.get_privacy_preferences(db, user.id)
+
+
+@app.patch("/api/profile/privacy")
+def update_privacy(body: dict, user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.update_privacy_preferences(db, user.id, body)
+
+
+@app.get("/api/profile/notifications")
+def get_notifications(user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.get_notification_preferences(db, user.id)
+
+
+@app.patch("/api/profile/notifications")
+def update_notifications(body: dict, user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.update_notification_preferences(db, user.id, body)
+
+
+@app.get("/api/profile/security")
+def get_security(user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.get_security_overview(db, user.id)
+
+
+@app.post("/api/profile/security/change-password")
+def change_pwd(body: ChangePasswordPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.change_password(db, user.id, body.current_password, body.new_password)
+
+
+@app.post("/api/profile/security/delete-account")
+def delete_acct(body: DeleteAccountPayload, user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.request_account_deletion(db, user.id, body.confirmation)
 
 
 # ------------------------------------------------------------------ MCP panel
