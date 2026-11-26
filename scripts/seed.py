@@ -22,10 +22,16 @@ from app.db import (  # noqa: E402
     Case,
     CaseMember,
     CentralDocument,
+    EmergencyContact,
+    EmergencyContactPermission,
+    MedicalInformation,
     SessionLocal,
     Task,
     TimelineEvent,
     User,
+    UserAddress,
+    UserNotificationPreference,
+    UserPrivacyPreference,
     Vehicle,
     VehicleDocument,
     VehicleInsurancePolicy,
@@ -214,9 +220,163 @@ def seed() -> dict:
     incident_utc = incident_ist.astimezone(timezone.utc).replace(tzinfo=None)
 
     db = SessionLocal()
-    db.add_all([User(id="u_priya", name="Priya", role_label="Family coordinator"),
-                User(id="u_arjun", name="Arjun", role_label="Brother"),
-                User(id="u_outsider", name="Outsider (demo)", role_label="Not a case member")])
+    u_priya = User(
+        id="u_priya",
+        name="Priya",
+        role_label="Family coordinator",
+        email="priya.sharma@example.com",
+        email_verified=True,
+        phone="+91 98450 88291",
+        phone_verified=True,
+        date_of_birth="1992-06-14",
+        gender="female",
+        preferred_language="English",
+        account_status="Active",
+    )
+    u_arjun = User(
+        id="u_arjun",
+        name="Arjun Sharma",
+        role_label="Brother",
+        email="arjun.sharma@example.com",
+        email_verified=True,
+        phone="+91 98450 12345",
+        phone_verified=True,
+        preferred_language="English",
+        account_status="Active",
+    )
+    u_outsider = User(
+        id="u_outsider",
+        name="Outsider (demo)",
+        role_label="Not a case member",
+        email="outsider@example.com",
+        email_verified=False,
+        phone="+91 99999 00000",
+        phone_verified=False,
+    )
+    db.add_all([u_priya, u_arjun, u_outsider])
+    db.flush()
+
+    # Seed Emergency Contacts for Priya
+    ec1 = EmergencyContact(
+        id="ec_arjun",
+        user_id="u_priya",
+        full_name="Arjun Sharma",
+        relationship="Sibling",
+        mobile_number="+91 98450 12345",
+        alternate_number="+91 80 2521 9988",
+        email="arjun.sharma@example.com",
+        priority=1,
+        is_primary=True,
+        preferred_contact_method="phone",
+    )
+    ec2 = EmergencyContact(
+        id="ec_ramesh",
+        user_id="u_priya",
+        full_name="Dr. Ramesh Sharma",
+        relationship="Parent",
+        mobile_number="+91 98450 54321",
+        email="dr.ramesh@example.com",
+        priority=2,
+        is_primary=False,
+        preferred_contact_method="phone",
+    )
+    db.add_all([ec1, ec2])
+    db.flush()
+
+    # Seed Permissions for Emergency Contacts
+    perm1 = EmergencyContactPermission(
+        id="ecp_arjun",
+        contact_id=ec1.id,
+        can_notify_accident=True,
+        can_receive_case_updates=True,
+        can_access_case=True,
+        permitted_case_ids='["case_demo"]',
+        can_view_limited_case_info=True,
+        can_view_medical=False,
+        can_view_documents=True,
+    )
+    perm2 = EmergencyContactPermission(
+        id="ecp_ramesh",
+        contact_id=ec2.id,
+        can_notify_accident=True,
+        can_receive_case_updates=False,
+        can_access_case=False,
+        permitted_case_ids="[]",
+        can_view_limited_case_info=True,
+        can_view_medical=False,
+        can_view_documents=False,
+    )
+    db.add_all([perm1, perm2])
+
+    # Seed Medical Information for Priya (Optional, restricted)
+    med = MedicalInformation(
+        id="med_priya",
+        user_id="u_priya",
+        blood_group="O+",
+        allergies="Penicillin (Mild urticaria / hives)",
+        medical_conditions="None recorded",
+        medications="None ongoing",
+        emergency_notes="Primary emergency contact is brother Arjun Sharma (+91 98450 12345)",
+        share_with_ems=True,
+        share_with_ai=False,
+    )
+    db.add(med)
+
+    # Seed Address for Priya
+    addr_curr = UserAddress(
+        id="addr_priya_curr",
+        user_id="u_priya",
+        address_type="current",
+        address_line_1="#402, Green Glen Layout",
+        address_line_2="Near Bellandur Lake Road, Outer Ring Road",
+        city="Bengaluru",
+        state="Karnataka",
+        pin_code="560103",
+        country="India",
+        is_same_as_current=False,
+    )
+    addr_perm = UserAddress(
+        id="addr_priya_perm",
+        user_id="u_priya",
+        address_type="permanent",
+        address_line_1="#402, Green Glen Layout",
+        address_line_2="Near Bellandur Lake Road, Outer Ring Road",
+        city="Bengaluru",
+        state="Karnataka",
+        pin_code="560103",
+        country="India",
+        is_same_as_current=True,
+    )
+    db.add_all([addr_curr, addr_perm])
+
+    # Seed Privacy Preferences for Priya
+    priv = UserPrivacyPreference(
+        id="priv_priya",
+        user_id="u_priya",
+        ai_data_access_enabled=True,
+        ai_include_medical=False,
+        ai_include_documents=True,
+        ai_include_vehicles=True,
+        ai_include_cases=True,
+        allow_emergency_broadcast=True,
+    )
+    db.add(priv)
+
+    # Seed Notification Preferences for Priya
+    notif = UserNotificationPreference(
+        id="notif_priya",
+        user_id="u_priya",
+        email_notifications=True,
+        sms_notifications=True,
+        in_app_notifications=True,
+        whatsapp_notifications=False,
+        accident_alerts=True,
+        case_updates=True,
+        document_expiry_reminders=True,
+        insurance_renewal_reminders=True,
+        pending_task_reminders=True,
+    )
+    db.add(notif)
     db.flush()
     case = Case(
         id="case_demo",

@@ -227,16 +227,20 @@ def tool_get_profile(db: Session, user_id: str) -> dict[str, Any]:
     if not user:
         return {"error": "User not found"}
 
-    vehicle_count = db.scalar(select(Vehicle.id).where(Vehicle.user_id == user_id)) is not None
-    doc_count = db.scalar(select(CentralDocument.id).where(CentralDocument.user_id == user_id)) is not None
-
+    from app.services import profile as prof_svc
+    prof = prof_svc.get_profile(db, user_id)
     return {
         "user_id": user.id,
         "name": user.name,
         "role_label": user.role_label,
-        "has_vehicles": vehicle_count,
-        "has_documents": doc_count,
-        "readiness_status": "Complete" if (vehicle_count and doc_count) else "Partially Prepared",
+        "email": user.email,
+        "phone": user.phone,
+        "preferred_language": user.preferred_language,
+        "completion_percentage": prof["stats"]["completion_percentage"],
+        "missing_items": prof["stats"]["missing_items"],
+        "registered_vehicles_count": prof["stats"]["registered_vehicles_count"],
+        "emergency_contacts_count": prof["stats"]["emergency_contacts_count"],
+        "readiness_status": "Complete" if prof["stats"]["completion_percentage"] >= 75 else "Partially Prepared",
     }
 
 

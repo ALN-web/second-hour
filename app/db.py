@@ -41,6 +41,17 @@ class User(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String)
     role_label: Mapped[str] = mapped_column(String, default="")
+    email: Mapped[str | None] = mapped_column(String, nullable=True, default="")
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    phone: Mapped[str | None] = mapped_column(String, nullable=True, default="")
+    phone_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    date_of_birth: Mapped[str | None] = mapped_column(String, nullable=True)
+    gender: Mapped[str | None] = mapped_column(String, nullable=True)
+    profile_photo: Mapped[str | None] = mapped_column(String, nullable=True)
+    preferred_language: Mapped[str] = mapped_column(String, default="English")
+    account_status: Mapped[str] = mapped_column(String, default="Active")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class Case(Base):
@@ -326,6 +337,99 @@ class ConversationMessage(Base):
     action_cards_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     suggested_followups_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class EmergencyContact(Base):
+    __tablename__ = "emergency_contacts"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("econtact"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    full_name: Mapped[str] = mapped_column(String)
+    relationship: Mapped[str] = mapped_column(String)  # Parent, Spouse, Sibling, Child, Relative, Friend, Other
+    mobile_number: Mapped[str] = mapped_column(String)
+    alternate_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    email: Mapped[str | None] = mapped_column(String, nullable=True)
+    priority: Mapped[int] = mapped_column(Integer, default=1)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    preferred_contact_method: Mapped[str] = mapped_column(String, default="phone")  # phone, whatsapp, sms
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class EmergencyContactPermission(Base):
+    __tablename__ = "emergency_contact_permissions"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("ecperm"))
+    contact_id: Mapped[str] = mapped_column(ForeignKey("emergency_contacts.id", ondelete="CASCADE"), index=True)
+    can_notify_accident: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_receive_case_updates: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_access_case: Mapped[bool] = mapped_column(Boolean, default=False)
+    permitted_case_ids: Mapped[str] = mapped_column(String, default="[]")  # JSON list of case IDs
+    can_view_limited_case_info: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_view_medical: Mapped[bool] = mapped_column(Boolean, default=False)
+    can_view_documents: Mapped[bool] = mapped_column(Boolean, default=False)
+    granted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class MedicalInformation(Base):
+    __tablename__ = "medical_information"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("medinfo"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    blood_group: Mapped[str | None] = mapped_column(String, nullable=True)
+    allergies: Mapped[str | None] = mapped_column(Text, nullable=True)
+    medical_conditions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    medications: Mapped[str | None] = mapped_column(Text, nullable=True)
+    emergency_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    share_with_ems: Mapped[bool] = mapped_column(Boolean, default=False)
+    share_with_ai: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class UserAddress(Base):
+    __tablename__ = "user_addresses"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("uaddr"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    address_type: Mapped[str] = mapped_column(String)  # current | permanent
+    address_line_1: Mapped[str] = mapped_column(String)
+    address_line_2: Mapped[str | None] = mapped_column(String, nullable=True)
+    city: Mapped[str] = mapped_column(String)
+    state: Mapped[str] = mapped_column(String)
+    pin_code: Mapped[str] = mapped_column(String)
+    country: Mapped[str] = mapped_column(String, default="India")
+    is_same_as_current: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class UserPrivacyPreference(Base):
+    __tablename__ = "user_privacy_preferences"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("privpref"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    ai_data_access_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    ai_include_medical: Mapped[bool] = mapped_column(Boolean, default=False)
+    ai_include_documents: Mapped[bool] = mapped_column(Boolean, default=True)
+    ai_include_vehicles: Mapped[bool] = mapped_column(Boolean, default=True)
+    ai_include_cases: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_emergency_broadcast: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class UserNotificationPreference(Base):
+    __tablename__ = "user_notification_preferences"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("notifpref"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    email_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
+    sms_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
+    in_app_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
+    whatsapp_notifications: Mapped[bool] = mapped_column(Boolean, default=False)
+    accident_alerts: Mapped[bool] = mapped_column(Boolean, default=True)
+    case_updates: Mapped[bool] = mapped_column(Boolean, default=True)
+    document_expiry_reminders: Mapped[bool] = mapped_column(Boolean, default=True)
+    insurance_renewal_reminders: Mapped[bool] = mapped_column(Boolean, default=True)
+    pending_task_reminders: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 def init_db() -> None:
