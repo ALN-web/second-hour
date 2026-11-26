@@ -22,7 +22,7 @@
 
 [**The problem**](#-the-problem) · [**What it does**](#-what-second-hour-does) · [**Screens**](#-a-look-inside) · [**Architecture**](#-architecture) · [**MCP contract**](#-the-mcp-contract) · [**Quick start**](#-quick-start) · [**Demo**](#-90-second-demo-path) · [**Safety**](#-safety-by-design)
 
-<img src="docs/screenshots/dashboard.png" alt="Second Hour case dashboard showing two watcher alerts, Day 3 of 7, and ₹1,24,000 of ₹1,50,000 confirmed bills" width="900"/>
+<img src="docs/screenshots/dashboard_live_mcp.png" alt="Second Hour case dashboard showing two watcher alerts, Day 2 of 7, ₹1,24,000 of ₹1,50,000 confirmed bills, and the Live MCP calls feed" width="900"/>
 
 </div>
 
@@ -290,7 +290,9 @@ docs/                      # Architecture notes and screenshots
 
 - [x] Real MCP server and client, approvals, watchers, cited RAG, document vault, PDF, MCP panel
 - [x] ElevenLabs voice read-out
-- [ ] Kannada and Hindi UI and answers
+- [x] Landing page, one-click demo staging, Live MCP calls feed on every screen
+- [ ] **v2 "Prepare once":** readiness profile (vehicles, insurance, PUC, trusted contacts), expiry reminders, minimal accident intake, recipient-specific draft packs. See [docs/VISION_V2.md](docs/VISION_V2.md)
+- [ ] Kannada and Hindi UI, answers and voice
 - [ ] AWS deployment (App Runner + RDS + S3)
 - [ ] OAuth on the MCP server; the actor derived from the token
 - [ ] WhatsApp reminders for assigned tasks

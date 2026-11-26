@@ -258,23 +258,24 @@ def solution(s):
     b = content_frame(s, "Second Hour: one shared case workspace and a proactive AI agent built on a real MCP server.",
                       "KEY FEATURES", lab, sub, bl)
     b.width = Inches(6.2)
-    b.height = Inches(2.6)
+    b.height = Inches(2.95)
     fill_bullets(b, [
         ("Case memory:", "one live workspace per accident, shared by the family."),
         ("Cited answers:", "PM-RAHAT rules only from official PIB/MoRTH text."),
         ("Document vault:", "fields auto-extracted, “Needs review” until confirmed."),
         ("Watchers:", "Day X of 7, ₹ used vs ₹1.5 lakh, police follow-up."),
         ("Agent proposes, family approves:", "tasks, assignments, reports."),
+        ("Live MCP feed:", "every tool call visible on screen as it happens."),
         ("Case package:", "one-click PDF; ElevenLabs voice read-out."),
     ], size=1400)
     if SHOT and SHOT.exists():
         pic = s.shapes.add_picture(str(SHOT), Inches(7.65), Inches(2.45), width=Inches(4.9))
         pic.name = "Screenshot: live case dashboard"
-        pic._element.nvPicPr.cNvPr.set("descr", "Second Hour dashboard: two watcher alerts, Day 3 of 7, Rs 1,24,000 of Rs 1,50,000 confirmed")
+        pic._element.nvPicPr.cNvPr.set("descr", "Second Hour dashboard: two watcher alerts, Day 2 of 7, Rs 1,24,000 of Rs 1,50,000 confirmed, Live MCP calls feed")
         pic.line.color.rgb = LINE
         pic.line.width = Pt(1)
         text_box(s, 7.65, 2.45 + pic.height / 914400 + 0.06, 4.9, 0.25,
-                 [[("Working MVP: live case dashboard with two watcher alerts (synthetic data)", {"italic": True, "size": 10, "color": MUTED})]])
+                 [[("Working MVP: watcher alerts and the Live MCP calls feed (synthetic data)", {"italic": True, "size": 10, "color": MUTED})]])
     text_box(s, 0.7, 5.62, 3.0, 0.3, [[("USER FLOW", {"bold": True, "color": BLUE, "size": 13})]])
     steps = ["Create case", "Upload bills", "Agent alerts", "Family approves", "Share PDF"]
     x = 0.7
@@ -304,8 +305,8 @@ def tech(s):
         x = 0.7 + (i % 3) * (w + gx)
         y = 2.45 + (i // 3) * (h + gy)
         labeled_card(s, x, y, w, h, t, lines, title_color=BLUE if i == 2 else NAVY, size=12, name=f"Stack {t}")
-    text_box(s, 0.7, 5.5, 9.4, 0.5, [[("Next 24 hrs: ", {"bold": True, "color": ORANGE, "size": 13}),
-                                      ("ElevenLabs voice read-out (Kannada/Hindi/English) and AWS deployment (App Runner + RDS + S3).", {"size": 13})]])
+    text_box(s, 0.7, 5.5, 9.4, 0.5, [[("Next: ", {"bold": True, "color": ORANGE, "size": 13}),
+                                      ("readiness profile (vehicles, insurance, PUC), Kannada/Hindi voice, AWS (App Runner + RDS + S3), OAuth on MCP.", {"size": 13})]])
 
 
 def architecture(s):
@@ -402,7 +403,7 @@ def impact(s):
                           ("Outcomes:", "fewer missed police follow-ups, earlier billing conversations, complete paperwork."),
                           ("Scale:", "any state; MCP lets hospital and insurer agents plug in.")]),
         ("Feasibility", BLUE, [("Technical:", "working MVP: 9 MCP tools, approvals, PDF, 9 passing tests."),
-                               ("Time:", "core built in one day; 24 hrs adds voice, languages, cloud."),
+                               ("Demo-ready:", "landing page, one-click demo staging, live MCP call feed."),
                                ("Cost:", "open-source stack; pay-per-use LLM and voice APIs.")]),
         ("Risks → mitigation", ORANGE, [("Wrong rules:", "answers only from cited official text."),
                                         ("Bad extraction:", "every field “Needs review” until confirmed."),
@@ -426,7 +427,7 @@ def business(s):
         ("Revenue:", "free for families; B2B licence for hospitals/TPAs per active case; insurer and CSR sponsorship."),
         ("Go-to-market:", "pilot at Bengaluru empanelled hospitals via a QR code at the emergency desk; road-safety NGOs."),
         ("Key costs:", "LLM and voice API usage, cloud hosting, support. Partners: hospitals, insurers, NGOs, AWS, ElevenLabs."),
-        ("Growth:", "more schemes and claims (motor accident claims, insurance), Indian languages, open MCP for partner agents."),
+        ("Growth:", "“Prepare once”: a readiness profile with insurance/PUC reminders keeps users active before any accident; more schemes, languages, partner agents via MCP."),
     ], size=1400)
     tiers = [("Families", "Free, always", NAVY), ("Hospitals & TPAs", "Per-case licence", BLUE), ("Insurers & CSR", "Sponsorship", ORANGE)]
     for i, (t, d, col) in enumerate(tiers):
@@ -448,12 +449,12 @@ def footer(prs):
 NOTES = [
     "Hello judges, we are Team Alpha. Our project is Second Hour, an MCP-powered case coordinator for Indian families after a road accident. The first hour belongs to the doctors; the second hour belongs to the family.",
     "After an accident, families juggle the PM-RAHAT scheme, hospital desks, police follow-ups and documents. PM-RAHAT covers up to 1.5 lakh rupees for 7 days from the accident, yet 3,674 victims were discharged after no police response within the prescribed timelines (PIB, 12 August 2026). Families cannot see either clock.",
-    "Second Hour gives the family one shared workspace and an agent that remembers the case, answers only from official sources with citations, reads bills with every field marked Needs review, runs two deterministic watchers, and only proposes actions that a family member approves. The screenshot is our working MVP.",
-    "We chose proven tools: React and Tailwind for a calm mobile-first UI, FastAPI and Claude for the agent, the official MCP Python SDK v2 over Streamable HTTP, PyMuPDF and ReportLab for documents, BM25 for citable retrieval, SQLite for zero-setup data, and ElevenLabs for voice. AWS deployment is next.",
+    "Second Hour gives the family one shared workspace and an agent that remembers the case, answers only from official sources with citations, reads bills with every field marked Needs review, runs two deterministic watchers, and only proposes actions that a family member approves. The Live MCP calls feed shows every tool call as it happens. The screenshot is our working MVP.",
+    "We chose proven tools: React and Tailwind for a calm mobile-first UI, FastAPI and Claude for the agent, the official MCP Python SDK v2 over Streamable HTTP, PyMuPDF and ReportLab for documents, BM25 for citable retrieval, SQLite for zero-setup data, and ElevenLabs for voice. Next: a readiness profile for vehicles, insurance and PUC, Kannada and Hindi voice, AWS deployment and OAuth on the MCP server.",
     "Every action flows through the MCP server. The agent host discovers tools live, converts them to Claude tool definitions, runs read-only tools immediately and turns writes into approval cards, decided by MCP tool annotations. A second host like MCP Inspector reads the same live case.",
     "Our USP: MCP-native and portable, deterministic watchers instead of LLM guesses, and safety by design. Compared with generic chatbots and helplines, only Second Hour remembers the case, cites official sources, alerts proactively and requires approval.",
     "Impact: fewer missed police follow-ups, earlier billing conversations and complete paperwork. Feasibility: the MVP already runs end to end with 9 passing tests. Risks such as wrong rules, bad extraction, over-reliance and privacy each have a concrete mitigation.",
-    "Free for families, always. Hospitals and TPAs license it per active case; insurers and CSR programmes sponsor it. We pilot at Bengaluru designated hospitals with a QR code at the emergency desk, then add languages, more schemes and partner agents through MCP. Thank you.",
+    "Free for families, always. Hospitals and TPAs license it per active case; insurers and CSR programmes sponsor it. We pilot at Bengaluru designated hospitals with a QR code at the emergency desk, then add a readiness profile so families prepare once, before any accident, plus languages, more schemes and partner agents through MCP. Thank you.",
 ]
 
 
@@ -465,7 +466,7 @@ def add_notes(prs):
 def main(src, dst):
     global SHOT
     from pathlib import Path
-    SHOT = Path(__file__).resolve().parent.parent / "docs" / "screenshots" / "dashboard_16x10.png"
+    SHOT = Path(__file__).resolve().parent.parent / "docs" / "screenshots" / "dashboard_live_mcp.png"
     prs = Presentation(src)
     sl = prs.slides
     footer(prs)
