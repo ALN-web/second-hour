@@ -52,6 +52,7 @@ class Case(Base):
     approximate_location: Mapped[str] = mapped_column(String)
     victim_display_name: Mapped[str | None] = mapped_column(String, nullable=True)
     hospital_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    vehicle_id: Mapped[str | None] = mapped_column(String, nullable=True)
     life_threatening: Mapped[bool] = mapped_column(Boolean, default=False)
     police_auth_status: Mapped[str] = mapped_column(String, default="not_started")
     police_auth_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -166,6 +167,71 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(Text)
     meta_json: Mapped[str] = mapped_column(Text, default="{}")
     at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Vehicle(Base):
+    __tablename__ = "vehicles"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("veh"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    registration_number: Mapped[str] = mapped_column(String, index=True)
+    category: Mapped[str] = mapped_column(String, default="Four Wheeler")  # Two Wheeler | Four Wheeler | Commercial | Other
+    manufacturer: Mapped[str] = mapped_column(String)  # e.g. Honda
+    model: Mapped[str] = mapped_column(String)         # e.g. City
+    variant: Mapped[str | None] = mapped_column(String, nullable=True)  # e.g. ZX CVT
+    manufacturing_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fuel_type: Mapped[str] = mapped_column(String, default="Petrol")
+    color: Mapped[str | None] = mapped_column(String, nullable=True)
+    chassis_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    engine_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    vin: Mapped[str | None] = mapped_column(String, nullable=True)
+    engine_capacity: Mapped[str | None] = mapped_column(String, nullable=True)
+    transmission: Mapped[str | None] = mapped_column(String, nullable=True)
+    owner_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    ownership_type: Mapped[str] = mapped_column(String, default="Individual")
+    relationship_to_user: Mapped[str | None] = mapped_column(String, nullable=True)
+    main_image: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class VehicleDocument(Base):
+    __tablename__ = "vehicle_documents"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("vdoc"))
+    vehicle_id: Mapped[str] = mapped_column(ForeignKey("vehicles.id", ondelete="CASCADE"))
+    document_type: Mapped[str] = mapped_column(String)  # rc | insurance | puc | purchase_invoice | service_record | other
+    document_name: Mapped[str] = mapped_column(String)
+    file_name: Mapped[str] = mapped_column(String)
+    stored_path: Mapped[str] = mapped_column(String)
+    mime_type: Mapped[str] = mapped_column(String)
+    file_size: Mapped[int] = mapped_column(Integer, default=0)
+    expiry_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verification_status: Mapped[str] = mapped_column(String, default="verified")  # verified | expiring_soon | expired | pending
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class VehiclePhoto(Base):
+    __tablename__ = "vehicle_photos"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("vpho"))
+    vehicle_id: Mapped[str] = mapped_column(ForeignKey("vehicles.id", ondelete="CASCADE"))
+    photo_category: Mapped[str] = mapped_column(String, default="main")  # main | front | rear | left | right | additional
+    file_name: Mapped[str] = mapped_column(String)
+    stored_path: Mapped[str] = mapped_column(String)
+    mime_type: Mapped[str] = mapped_column(String)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class VehicleInsurancePolicy(Base):
+    __tablename__ = "vehicle_insurance_policies"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("vpol"))
+    vehicle_id: Mapped[str] = mapped_column(ForeignKey("vehicles.id", ondelete="CASCADE"))
+    provider: Mapped[str] = mapped_column(String)
+    policy_number: Mapped[str] = mapped_column(String)
+    policy_type: Mapped[str] = mapped_column(String, default="Comprehensive")
+    start_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expiry_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    document_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 def init_db() -> None:
