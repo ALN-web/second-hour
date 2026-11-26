@@ -7,14 +7,18 @@ interface ReportAccidentModalProps {
   isOpen: boolean
   onClose: () => void
   onCaseCreated: (caseData: any) => void
+  vehicles?: Array<{ id: string; registration_number: string; manufacturer: string; model: string }>
 }
 
-export function ReportAccidentModal({ isOpen, onClose, onCaseCreated }: ReportAccidentModalProps) {
+export function ReportAccidentModal({ isOpen, onClose, onCaseCreated, vehicles }: ReportAccidentModalProps) {
   const [form, setForm] = useState(() => ({
     incident_at: new Date().toISOString().slice(0, 16),
-    approximate_location: 'Hosur Road, Bengaluru',
+    approximate_location: 'Outer Ring Road, Bengaluru',
     victim_display_name: 'Ravi Kumar',
     hospital_name: 'Sample City Hospital',
+    vehicle_id: vehicles && vehicles.length > 0 ? vehicles[0].id : '',
+    injury_severity: 'Moderate',
+    accident_type: 'Two-Vehicle Collision',
     life_threatening: false,
   }))
   const [busy, setBusy] = useState(false)
@@ -94,6 +98,24 @@ export function ReportAccidentModal({ isOpen, onClose, onCaseCreated }: ReportAc
               value={form.approximate_location}
               onChange={(e) => setForm({ ...form, approximate_location: e.target.value })}
             />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Registered Vehicle Involved
+            </label>
+            <select
+              value={form.vehicle_id}
+              onChange={(e) => setForm({ ...form, vehicle_id: e.target.value })}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-navy-800"
+            >
+              <option value="">No registered vehicle / Other</option>
+              {vehicles?.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.registration_number} · {v.manufacturer} {v.model}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
