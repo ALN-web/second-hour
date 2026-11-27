@@ -17,11 +17,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, desc, or_, select
+from sqlalchemy import delete, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from app import config
 from app.db import (
+    AIActionLog,
     Case,
     CaseMember,
     CentralDocument,
@@ -39,7 +40,7 @@ from app.db import (
     new_id,
     utcnow,
 )
-from app.services import guidance
+from app.services import audit, guidance, privacy
 from app.services.common import PermissionDenied, ServiceError, iso
 
 
@@ -88,54 +89,99 @@ def _make_action_card(
 # Conversation CRUD
 # ==============================================================================
 
-def list_conversations(db: Session, user_id: str) -> list[dict[str, Any]]:
-    """List all conversations for a user ordered by pin status and updated_at desc."""
-    convs = db.scalars(
-        select(Conversation)
-        .where(Conversation.user_id == user_id)
-        .order_by(desc(Conversation.is_pinned), desc(Conversation.updated_at))
-    ).all()
+def list_conversations(
+    db: Session,
+    user_id: str,
+    status: str | None = None,
+    case_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List all conversations for a user with privacy boundary isolation."""
+    stmt = select(Conversation).where(Conversation.user_id == user_id)
+    if status:
+        stmt = stmt.where(Conversation.status == status)
+    else:
+        # Default active conversations
+        stmt = stmt.where(Conversation.status != "deleted")
+    if case_id:
+        stmt = stmt.where(Conversation.case_id == case_id)
+
+    stmt = stmt.order_by(desc(Conversation.is_pinned), desc(Conversation.updated_at))
+    convs = db.scalars(stmt).all()
 
     results = []
     for c in convs:
         last_msg = db.scalars(
             select(ConversationMessage)
             .where(ConversationMessage.conversation_id == c.id)
-            .order_by(desc(ConversationMessage.created_at))
+            .order_by(desc(ConversationMessage.sequence_number), desc(ConversationMessage.created_at))
             .limit(1)
         ).first()
 
         results.append({
             "id": c.id,
             "title": c.title,
+            "status": c.status or "active",
             "is_pinned": c.is_pinned,
+            "case_id": c.case_id,
+            "ai_provider": c.ai_provider,
+            "model_identifier": c.model_identifier,
             "last_message": last_msg.content[:120] if last_msg else None,
-            "last_message_at": iso(last_msg.created_at) if last_msg else iso(c.updated_at),
+            "last_message_at": iso(c.last_message_at) or (iso(last_msg.created_at) if last_msg else iso(c.updated_at)),
             "created_at": iso(c.created_at),
             "updated_at": iso(c.updated_at),
+            "archived_at": iso(c.archived_at) if c.archived_at else None,
         })
     return results
 
 
-def create_conversation(db: Session, user_id: str, title: str | None = None) -> dict[str, Any]:
-    """Create a new conversation."""
+def create_conversation(
+    db: Session,
+    user_id: str,
+    title: str | None = None,
+    case_id: str | None = None,
+    ai_provider: str = "gemini",
+    model_identifier: str | None = None,
+) -> dict[str, Any]:
+    """Create a new conversation session."""
     user = db.get(User, user_id)
     if not user:
         raise ServiceError("User not found")
 
+    cid = new_id("conv")
+    now = utcnow()
     conv = Conversation(
-        id=new_id("conv"),
+        id=cid,
         user_id=user_id,
+        case_id=case_id,
         title=(title or "New Conversation").strip()[:80],
+        status="active",
+        ai_provider=ai_provider,
+        model_identifier=model_identifier,
+        last_message_at=now,
     )
     db.add(conv)
+
+    audit.record_audit(
+        db=db,
+        actor_id=user_id,
+        action_type="create_conversation",
+        resource_type="conversation",
+        resource_id=cid,
+        case_id=case_id,
+        result_summary=f"Created conversation '{conv.title}'",
+    )
     db.commit()
     db.refresh(conv)
 
     return {
         "id": conv.id,
         "title": conv.title,
+        "status": conv.status,
+        "case_id": conv.case_id,
+        "ai_provider": conv.ai_provider,
+        "model_identifier": conv.model_identifier,
         "is_pinned": conv.is_pinned,
+        "last_message_at": iso(conv.last_message_at),
         "created_at": iso(conv.created_at),
         "updated_at": iso(conv.updated_at),
         "messages": [],
@@ -143,7 +189,7 @@ def create_conversation(db: Session, user_id: str, title: str | None = None) -> 
 
 
 def get_conversation(db: Session, user_id: str, conversation_id: str) -> dict[str, Any]:
-    """Get conversation details and full message history."""
+    """Get conversation details and full ordered message history."""
     conv = db.get(Conversation, conversation_id)
     if not conv:
         raise ServiceError("Conversation not found")
@@ -153,29 +199,109 @@ def get_conversation(db: Session, user_id: str, conversation_id: str) -> dict[st
     messages = db.scalars(
         select(ConversationMessage)
         .where(ConversationMessage.conversation_id == conversation_id)
-        .order_by(ConversationMessage.created_at.asc())
+        .order_by(ConversationMessage.sequence_number.asc(), ConversationMessage.created_at.asc())
     ).all()
 
     msg_list = []
     for m in messages:
+        cites = m.source_references_json if isinstance(m.source_references_json, list) else json.loads(m.citations_json or "[]")
+        cards = json.loads(m.action_cards_json or "[]")
+        followups = json.loads(m.suggested_followups_json or "[]")
+
         msg_list.append({
             "id": m.id,
             "sender": m.sender,
+            "sender_type": m.sender_type or m.sender,
             "content": m.content,
-            "citations": json.loads(m.citations_json or "[]"),
-            "action_cards": json.loads(m.action_cards_json or "[]"),
-            "suggested_followups": json.loads(m.suggested_followups_json or "[]"),
+            "content_format": m.content_format or "text",
+            "sequence_number": m.sequence_number,
+            "citations": cites,
+            "action_cards": cards,
+            "suggested_followups": followups,
             "created_at": iso(m.created_at),
         })
 
     return {
         "id": conv.id,
         "title": conv.title,
+        "status": conv.status or "active",
+        "case_id": conv.case_id,
+        "ai_provider": conv.ai_provider,
+        "model_identifier": conv.model_identifier,
         "is_pinned": conv.is_pinned,
+        "last_message_at": iso(conv.last_message_at),
         "created_at": iso(conv.created_at),
         "updated_at": iso(conv.updated_at),
+        "archived_at": iso(conv.archived_at) if conv.archived_at else None,
         "messages": msg_list,
     }
+
+
+def rename_conversation(db: Session, user_id: str, conversation_id: str, new_title: str) -> dict[str, Any]:
+    """Rename a conversation."""
+    conv = db.get(Conversation, conversation_id)
+    if not conv:
+        raise ServiceError("Conversation not found")
+    if conv.user_id != user_id:
+        raise PermissionDenied("You do not have access to this conversation")
+
+    clean = (new_title or "").strip()[:80]
+    if not clean:
+        raise ServiceError("Conversation title cannot be empty")
+
+    conv.title = clean
+    conv.updated_at = utcnow()
+
+    audit.record_audit(
+        db=db,
+        actor_id=user_id,
+        action_type="rename_conversation",
+        resource_type="conversation",
+        resource_id=conv.id,
+        result_summary=f"Renamed conversation to '{conv.title}'",
+    )
+    db.commit()
+    return {"id": conv.id, "title": conv.title, "updated_at": iso(conv.updated_at)}
+
+
+def archive_conversation(db: Session, user_id: str, conversation_id: str) -> dict[str, Any]:
+    """Archive a conversation session."""
+    conv = db.get(Conversation, conversation_id)
+    if not conv:
+        raise ServiceError("Conversation not found")
+    if conv.user_id != user_id:
+        raise PermissionDenied("You do not have access to this conversation")
+
+    now = utcnow()
+    conv.status = "archived"
+    conv.archived_at = now
+    conv.updated_at = now
+
+    audit.record_audit(
+        db=db,
+        actor_id=user_id,
+        action_type="archive_conversation",
+        resource_type="conversation",
+        resource_id=conv.id,
+        result_summary=f"Archived conversation '{conv.title}'",
+    )
+    db.commit()
+    return {"id": conv.id, "status": "archived", "archived_at": iso(now)}
+
+
+def unarchive_conversation(db: Session, user_id: str, conversation_id: str) -> dict[str, Any]:
+    """Restore an archived conversation to active status."""
+    conv = db.get(Conversation, conversation_id)
+    if not conv:
+        raise ServiceError("Conversation not found")
+    if conv.user_id != user_id:
+        raise PermissionDenied("You do not have access to this conversation")
+
+    conv.status = "active"
+    conv.archived_at = None
+    conv.updated_at = utcnow()
+    db.commit()
+    return {"id": conv.id, "status": "active", "archived_at": None}
 
 
 def delete_conversation(db: Session, user_id: str, conversation_id: str) -> bool:
@@ -186,6 +312,14 @@ def delete_conversation(db: Session, user_id: str, conversation_id: str) -> bool
     if conv.user_id != user_id:
         raise PermissionDenied("You do not have access to this conversation")
 
+    audit.record_audit(
+        db=db,
+        actor_id=user_id,
+        action_type="delete_conversation",
+        resource_type="conversation",
+        resource_id=conversation_id,
+        result_summary=f"Deleted conversation '{conv.title}'",
+    )
     db.execute(delete(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id))
     db.delete(conv)
     db.commit()
@@ -200,6 +334,13 @@ def clear_conversations(db: Session, user_id: str) -> int:
 
     db.execute(delete(ConversationMessage).where(ConversationMessage.conversation_id.in_(conv_ids)))
     count = db.execute(delete(Conversation).where(Conversation.user_id == user_id)).rowcount
+    audit.record_audit(
+        db=db,
+        actor_id=user_id,
+        action_type="clear_conversations",
+        resource_type="conversation",
+        result_summary=f"Cleared {count} conversations",
+    )
     db.commit()
     return count
 
@@ -213,8 +354,205 @@ def pin_conversation(db: Session, user_id: str, conversation_id: str, pinned: bo
         raise PermissionDenied("You do not have access to this conversation")
 
     conv.is_pinned = pinned
+    conv.updated_at = utcnow()
     db.commit()
     return {"id": conv.id, "is_pinned": conv.is_pinned}
+
+
+# ==============================================================================
+# AI Action Logs & Supervised Approval
+# ==============================================================================
+
+def _action_log_dict(a: AIActionLog) -> dict[str, Any]:
+    return {
+        "id": a.id,
+        "user_id": a.user_id,
+        "conversation_id": a.conversation_id,
+        "case_id": a.case_id,
+        "action_type": a.action_type,
+        "action_description": a.action_description,
+        "input_metadata": a.input_metadata or {},
+        "output_metadata": a.output_metadata or {},
+        "action_status": a.action_status,
+        "approval_required": a.approval_required,
+        "approved_by": a.approved_by,
+        "approval_timestamp": iso(a.approval_timestamp) if a.approval_timestamp else None,
+        "execution_timestamp": iso(a.execution_timestamp) if a.execution_timestamp else None,
+        "failure_reason": a.failure_reason,
+        "created_at": iso(a.created_at),
+    }
+
+
+def propose_action(
+    db: Session,
+    user_id: str,
+    action_type: str,
+    description: str,
+    input_payload: dict[str, Any],
+    conversation_id: str | None = None,
+    case_id: str | None = None,
+    requires_approval: bool = True,
+) -> dict[str, Any]:
+    """Register a proposed AI action awaiting user inspection."""
+    aid = new_id("aiact")
+    action = AIActionLog(
+        id=aid,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        case_id=case_id,
+        action_type=action_type,
+        action_description=description,
+        input_metadata=input_payload,
+        output_metadata={},
+        action_status="awaiting_approval" if requires_approval else "proposed",
+        approval_required=requires_approval,
+        created_at=utcnow(),
+    )
+    db.add(action)
+    db.flush()
+
+    audit.record_audit(
+        db=db,
+        actor_id=user_id,
+        actor_type="ai",
+        action_type="propose_ai_action",
+        resource_type="ai_action",
+        resource_id=aid,
+        case_id=case_id,
+        payload={"action_type": action_type, "requires_approval": requires_approval},
+        result_summary=f"AI proposed action: {description}",
+    )
+    db.commit()
+    return _action_log_dict(action)
+
+
+def list_ai_actions(
+    db: Session,
+    user_id: str,
+    status: str | None = None,
+    case_id: str | None = None,
+    conversation_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List AI actions proposed or executed for a user."""
+    stmt = select(AIActionLog).where(AIActionLog.user_id == user_id)
+    if status:
+        stmt = stmt.where(AIActionLog.action_status == status)
+    if case_id:
+        stmt = stmt.where(AIActionLog.case_id == case_id)
+    if conversation_id:
+        stmt = stmt.where(AIActionLog.conversation_id == conversation_id)
+
+    stmt = stmt.order_by(desc(AIActionLog.created_at))
+    actions = db.scalars(stmt).all()
+    return [_action_log_dict(a) for a in actions]
+
+
+def get_action_details(db: Session, user_id: str, action_id: str) -> dict[str, Any]:
+    """Retrieve details of a specific AI action."""
+    action = db.get(AIActionLog, action_id)
+    if not action or action.user_id != user_id:
+        raise ServiceError("Action not found")
+    return _action_log_dict(action)
+
+
+def approve_action(
+    db: Session,
+    user_id: str,
+    action_id: str,
+    approval_notes: str = "",
+) -> dict[str, Any]:
+    """Human-in-the-loop approval and execution of a proposed AI action.
+
+    Strict rules:
+    - AI cannot approve its own actions.
+    - Approval is bound to the exact proposed action.
+    - Underlying operation must confirm success.
+    """
+    if user_id in ("ai", "system", "assistant", "ai_assistant_agent") or "ai" in str(user_id).lower():
+        raise PermissionDenied("AI agents and automated systems are strictly forbidden from approving actions")
+
+    action = db.get(AIActionLog, action_id)
+    if not action or action.user_id != user_id:
+        raise ServiceError("Action not found or unauthorized")
+
+    if action.action_status not in ("proposed", "awaiting_approval"):
+        raise ServiceError(f"Action cannot be approved from status '{action.action_status}'")
+
+    now = utcnow()
+    action.approved_by = user_id
+    action.approval_timestamp = now
+    action.action_status = "executing"
+    db.flush()
+
+    # Execute underlying business action
+    try:
+        result = execute_assistant_action(
+            db=db,
+            user_id=user_id,
+            action_type=action.action_type,
+            payload=action.input_metadata or {},
+        )
+
+        if result.get("status") == "error":
+            action.action_status = "failed"
+            action.failure_reason = result.get("message", "Action execution error")
+        else:
+            action.action_status = "completed"
+            action.output_metadata = result
+            action.execution_timestamp = utcnow()
+            action.failure_reason = None
+    except Exception as exc:
+        action.action_status = "failed"
+        action.failure_reason = str(exc)
+        result = {"status": "error", "error": str(exc)}
+
+    # Audit log
+    audit.record_audit(
+        db=db,
+        actor_id=user_id,
+        action_type="approve_ai_action",
+        resource_type="ai_action",
+        resource_id=action.id,
+        case_id=action.case_id,
+        action_outcome="success" if action.action_status == "completed" else "failure",
+        payload={"action_type": action.action_type, "result": result, "notes": approval_notes},
+        result_summary=f"User approved AI action '{action.action_type}': {action.action_status}",
+    )
+    db.commit()
+    return _action_log_dict(action)
+
+
+def reject_action(
+    db: Session,
+    user_id: str,
+    action_id: str,
+    reason: str = "User dismissed proposed action",
+) -> dict[str, Any]:
+    """Explicitly reject a proposed action without executing it."""
+    action = db.get(AIActionLog, action_id)
+    if not action or action.user_id != user_id:
+        raise ServiceError("Action not found")
+
+    if action.action_status not in ("proposed", "awaiting_approval"):
+        raise ServiceError(f"Action cannot be rejected from status '{action.action_status}'")
+
+    action.action_status = "rejected"
+    action.failure_reason = reason or "Rejected by user"
+
+    audit.record_audit(
+        db=db,
+        actor_id=user_id,
+        action_type="reject_ai_action",
+        resource_type="ai_action",
+        resource_id=action.id,
+        case_id=action.case_id,
+        action_outcome="denied",
+        payload={"reason": reason},
+        result_summary=f"User rejected AI action '{action.action_type}'",
+    )
+    db.commit()
+    return _action_log_dict(action)
+
 
 
 # ==============================================================================
@@ -535,10 +873,29 @@ def execute_assistant_action(db: Session, user_id: str, action_type: str, payloa
 
 def _generate_grounded_response(db: Session, user_id: str, query: str) -> dict[str, Any]:
     """Analyze user intent, call real application tools, synthesize answer with citations & action cards."""
+    # 0. Check global AI data access privacy boundary
+    if not privacy.check_ai_data_access(db, user_id, "general"):
+        return {
+            "content": (
+                "> [!NOTE] **Privacy Setting Notice**\n"
+                "> AI data access is currently disabled in your Profile Privacy Preferences. "
+                "To receive personalized answers based on your records, please enable AI Data Access under **Profile > Privacy & Consent**."
+            ),
+            "citations": [],
+            "action_cards": [],
+            "suggested_followups": ["How do I update my privacy preferences?"],
+        }
+
     q_lower = query.lower().strip()
     citations: list[dict[str, str]] = []
     action_cards: list[dict[str, Any]] = []
     followups: list[str] = []
+
+    # Check category privacy permissions
+    can_vehicles = privacy.check_ai_data_access(db, user_id, "vehicles")
+    can_docs = privacy.check_ai_data_access(db, user_id, "documents")
+    can_cases = privacy.check_ai_data_access(db, user_id, "cases")
+    can_medical = privacy.check_ai_data_access(db, user_id, "medical")
 
     # 1. Emergency intent check
     is_emergency = any(w in q_lower for w in ["emergency", "112", "bleeding", "unconscious", "just had an accident", "ambulance", "help now", "critical"])
@@ -558,18 +915,49 @@ def _generate_grounded_response(db: Session, user_id: str, query: str) -> dict[s
     case_intent = any(w in q_lower for w in ["case", "accident", "hospital", "police", "fir", "claim", "surveyor", "status", "timeline", "injury", "treatment", "doctor", "ward"])
     # 5. Check for PM-RAHAT scheme queries
     scheme_intent = any(w in q_lower for w in ["rahat", "pm-rahat", "pmrahat", "scheme", "golden hour", "cashless", "1.5 lakh", "150000", "empanelled", "eligibility", "government cover"])
+    # 6. Check for medical queries
+    medical_intent = any(w in q_lower for w in ["medical", "blood group", "allergy", "allergies", "chronic", "health"])
+
+    # Handle Medical info
+    medical_text = ""
+    if medical_intent:
+        if can_medical:
+            from app.db import MedicalInformation
+            med = db.scalars(select(MedicalInformation).where(MedicalInformation.user_id == user_id)).first()
+            if med:
+                medical_text = (
+                    f"### Medical Profile\n"
+                    f"- **Blood Group:** {med.blood_group or 'Not recorded'}\n"
+                    f"- **Allergies:** {med.allergies or 'None reported'}\n"
+                    f"- **Chronic Conditions:** {med.chronic_conditions or 'None reported'}\n\n"
+                )
+                citations.append(_make_citation(
+                    cite_id=f"cite_med_{med.id}",
+                    cite_type="APPLICATION_RECORD",
+                    title="User Medical Information",
+                    snippet=f"Blood group: {med.blood_group}. Allergies: {med.allergies}.",
+                    url_or_path="/profile",
+                    verification="verified",
+                ))
+            else:
+                medical_text = "### Medical Profile\nNo medical details currently recorded on your profile.\n\n"
+        else:
+            medical_text = (
+                "### Medical Profile\n"
+                "*[Privacy Boundary] Medical information access is strictly disabled by default in your profile privacy preferences. "
+                "Enable 'Include Medical Records' in privacy settings to allow AI assistance with medical data.*\n\n"
+            )
 
     # If nothing specific matched, provide an intelligent overview
-    if not (vehicle_intent or doc_intent or case_intent or scheme_intent or is_emergency):
-        # Broad query or general question
+    if not (vehicle_intent or doc_intent or case_intent or scheme_intent or is_emergency or medical_intent):
         profile = tool_get_profile(db, user_id)
-        vehicles = tool_get_vehicles(db, user_id)
-        cases = tool_get_cases(db, user_id)
-        docs = tool_search_documents(db, user_id)
+        vehicles = tool_get_vehicles(db, user_id) if can_vehicles else []
+        cases = tool_get_cases(db, user_id) if can_cases else []
+        docs = tool_search_documents(db, user_id) if can_docs else []
 
-        v_summary = f"{len(vehicles)} vehicle(s)" if vehicles else "No registered vehicles"
-        c_summary = f"{len(cases)} case(s)" if cases else "No active accident cases"
-        d_summary = f"{len(docs)} document(s)" if docs else "No documents uploaded"
+        v_summary = f"{len(vehicles)} vehicle(s)" if can_vehicles else "Hidden by privacy setting"
+        c_summary = f"{len(cases)} case(s)" if can_cases else "Hidden by privacy setting"
+        d_summary = f"{len(docs)} document(s)" if can_docs else "Hidden by privacy setting"
 
         text = (
             f"Hello **{profile.get('name', 'there')}**! I am your Second Hour assistant, connected to your preparedness records, documents, and cases.\n\n"
@@ -578,7 +966,7 @@ def _generate_grounded_response(db: Session, user_id: str, query: str) -> dict[s
             f"- **Vehicles:** {v_summary}\n"
             f"- **Accident Cases:** {c_summary}\n"
             f"- **Document Wallet:** {d_summary}\n\n"
-            f"You can ask me to check your insurance expiry, review medical documents, guide you through PM-RAHAT cashless assistance, or track case progress.\n\n"
+            f"You can ask me to check your insurance expiry, review documents, guide you through PM-RAHAT cashless assistance, or track case progress.\n\n"
             f"*(In case of a life-threatening emergency on the road, always dial **112** immediately.)*"
         )
 
@@ -628,135 +1016,146 @@ def _generate_grounded_response(db: Session, user_id: str, query: str) -> dict[s
     # Handle Vehicles queries
     vehicle_text = ""
     if vehicle_intent:
-        vehicles = tool_get_vehicles(db, user_id)
-        if vehicles:
-            vehicle_text += "### Your Registered Vehicles & Insurance\n"
-            for v in vehicles:
-                ins_badge = v['insurance_status'].replace('_', ' ').title()
-                days_txt = f"({v['days_until_expiry']} days remaining)" if v['days_until_expiry'] is not None and v['days_until_expiry'] >= 0 else "(Expired)"
-                vehicle_text += (
-                    f"- **{v['manufacturer']} {v['model']} ({v['registration_number']})**\n"
-                    f"  - Insurance Provider: **{v['insurance_provider'] or 'Not Provided'}**\n"
-                    f"  - Policy Number: `{v['policy_number'] or 'N/A'}`\n"
-                    f"  - Policy Expiry: **{v['insurance_expiry'] or 'N/A'}** {days_txt} · Status: `{ins_badge}`\n"
-                    f"  - Fuel & Year: {v['fuel_type']} · {v['manufacturing_year']}\n\n"
-                )
-                citations.append(_make_citation(
-                    cite_id=f"cite_veh_{v['id']}",
-                    cite_type="APPLICATION_RECORD",
-                    title=f"Vehicle Record: {v['registration_number']} ({v['manufacturer']} {v['model']})",
-                    snippet=f"Policy {v['policy_number']} with {v['insurance_provider']}, valid until {v['insurance_expiry']}.",
-                    url_or_path=f"/vehicles/{v['id']}",
-                    verification="verified",
-                ))
-                action_cards.append(_make_action_card(
-                    action_id=f"act_veh_{v['id']}",
-                    action_type="NAVIGATE",
-                    title=f"Manage {v['registration_number']}",
-                    description=f"View full vehicle specifications, policy details, and attached RC & PUC files.",
-                    payload={"path": f"/vehicles/{v['id']}"},
-                    button_label="View Vehicle Details",
-                ))
+        if not can_vehicles:
+            vehicle_text += "### Registered Vehicles & Insurance\n*[Privacy Boundary] Vehicle data access is disabled in your privacy settings.*\n\n"
         else:
-            vehicle_text += (
-                "### Registered Vehicles\n"
-                "You have no registered vehicles in your account currently. You can add your car or two-wheeler to keep its RC, PUC, and Insurance policy organized.\n\n"
-            )
-            action_cards.append(_make_action_card(
-                action_id="act_add_veh",
-                action_type="NAVIGATE",
-                title="Add a Vehicle",
-                description="Register your vehicle to track insurance expiry reminders and centralize documents.",
-                payload={"path": "/vehicles"},
-                button_label="Go to My Vehicles",
-            ))
+            vehicles = tool_get_vehicles(db, user_id)
+            if vehicles:
+                vehicle_text += "### Your Registered Vehicles & Insurance\n"
+                for v in vehicles:
+                    ins_badge = v['insurance_status'].replace('_', ' ').title()
+                    days_txt = f"({v['days_until_expiry']} days remaining)" if v['days_until_expiry'] is not None and v['days_until_expiry'] >= 0 else "(Expired)"
+                    vehicle_text += (
+                        f"- **{v['manufacturer']} {v['model']} ({v['registration_number']})**\n"
+                        f"  - Insurance Provider: **{v['insurance_provider'] or 'Not Provided'}**\n"
+                        f"  - Policy Number: `{v['policy_number'] or 'N/A'}`\n"
+                        f"  - Policy Expiry: **{v['insurance_expiry'] or 'N/A'}** {days_txt} · Status: `{ins_badge}`\n"
+                        f"  - Fuel & Year: {v['fuel_type']} · {v['manufacturing_year']}\n\n"
+                    )
+                    citations.append(_make_citation(
+                        cite_id=f"cite_veh_{v['id']}",
+                        cite_type="APPLICATION_RECORD",
+                        title=f"Vehicle Record: {v['registration_number']} ({v['manufacturer']} {v['model']})",
+                        snippet=f"Policy {v['policy_number']} with {v['insurance_provider']}, valid until {v['insurance_expiry']}.",
+                        url_or_path=f"/vehicles/{v['id']}",
+                        verification="verified",
+                    ))
+                    action_cards.append(_make_action_card(
+                        action_id=f"act_veh_{v['id']}",
+                        action_type="NAVIGATE",
+                        title=f"Manage {v['registration_number']}",
+                        description=f"View full vehicle specifications, policy details, and attached RC & PUC files.",
+                        payload={"path": f"/vehicles/{v['id']}"},
+                        button_label="View Vehicle Details",
+                    ))
+            else:
+                vehicle_text += (
+                    "### Registered Vehicles\n"
+                    "You have no registered vehicles in your account currently. You can add your car or two-wheeler to keep its RC, PUC, and Insurance policy organized.\n\n"
+                )
+                action_cards.append(_make_action_card(
+                    action_id="act_add_veh",
+                    action_type="NAVIGATE",
+                    title="Add a Vehicle",
+                    description="Register your vehicle to track insurance expiry reminders and centralize documents.",
+                    payload={"path": "/vehicles"},
+                    button_label="Go to My Vehicles",
+                ))
 
     # Handle Documents queries
     doc_text = ""
     if doc_intent:
-        docs = tool_search_documents(db, user_id)
-        if docs:
-            doc_text += f"### Your Document Wallet ({len(docs)} documents found)\n"
-            for d in docs[:5]:
-                cat = (d['category'] or 'general').title()
-                exp = f"· Expiry: {d['expiry_date']}" if d.get('expiry_date') else ""
-                doc_text += f"- **{d['document_name']}** (`{cat}`) — Status: `{d['verification_status']}` {exp}\n"
-                citations.append(_make_citation(
-                    cite_id=f"cite_doc_{d['id']}",
-                    cite_type="DOCUMENT_WALLET",
-                    title=f"Document: {d['document_name']} ({cat})",
-                    snippet=f"Document #{d.get('document_number') or 'N/A'} · Verified in Document Wallet.",
-                    url_or_path="/documents",
-                    verification="user_record",
-                ))
-            doc_text += "\n"
-            action_cards.append(_make_action_card(
-                action_id="act_open_docs",
-                action_type="NAVIGATE",
-                title="Open Document Wallet",
-                description="Browse, filter, preview and download all personal, vehicle, and accident records.",
-                payload={"path": "/documents"},
-                button_label="Open Document Wallet",
-            ))
+        if not can_docs:
+            doc_text += "### Document Wallet\n*[Privacy Boundary] Document wallet access is disabled in your privacy settings.*\n\n"
         else:
-            doc_text += (
-                "### Document Wallet\n"
-                "You currently have no documents uploaded in your Document Wallet. You can upload Driving Licences, Medical Bills, RC, and Insurance cards.\n\n"
-            )
-            action_cards.append(_make_action_card(
-                action_id="act_upload_doc",
-                action_type="INITIATE_UPLOAD",
-                title="Upload Document",
-                description="Add an important document (PDF, PNG, JPG) to your secure wallet.",
-                payload={"target": "documents"},
-                button_label="Upload New Document",
-            ))
+            docs = tool_search_documents(db, user_id)
+            if not can_medical:
+                docs = [d for d in docs if (d.get("category") or "").lower() != "medical"]
+            if docs:
+                doc_text += f"### Your Document Wallet ({len(docs)} documents found)\n"
+                for d in docs[:5]:
+                    cat = (d['category'] or 'general').title()
+                    exp = f"· Expiry: {d['expiry_date']}" if d.get('expiry_date') else ""
+                    doc_text += f"- **{d['document_name']}** (`{cat}`) — Status: `{d['verification_status']}` {exp}\n"
+                    citations.append(_make_citation(
+                        cite_id=f"cite_doc_{d['id']}",
+                        cite_type="DOCUMENT_WALLET",
+                        title=f"Document: {d['document_name']} ({cat})",
+                        snippet=f"Document #{d.get('document_number') or 'N/A'} · Verified in Document Wallet.",
+                        url_or_path="/documents",
+                        verification="user_record",
+                    ))
+                doc_text += "\n"
+                action_cards.append(_make_action_card(
+                    action_id="act_open_docs",
+                    action_type="NAVIGATE",
+                    title="Open Document Wallet",
+                    description="Browse, filter, preview and download all personal, vehicle, and accident records.",
+                    payload={"path": "/documents"},
+                    button_label="Open Document Wallet",
+                ))
+            else:
+                doc_text += (
+                    "### Document Wallet\n"
+                    "You currently have no documents uploaded in your Document Wallet. You can upload Driving Licences, Medical Bills, RC, and Insurance cards.\n\n"
+                )
+                action_cards.append(_make_action_card(
+                    action_id="act_upload_doc",
+                    action_type="INITIATE_UPLOAD",
+                    title="Upload Document",
+                    description="Add an important document (PDF, PNG, JPG) to your secure wallet.",
+                    payload={"target": "documents"},
+                    button_label="Upload New Document",
+                ))
 
     # Handle Case queries
     case_text = ""
     if case_intent:
-        cases = tool_get_cases(db, user_id)
-        if cases:
-            case_text += "### Active Accident Cases\n"
-            for c in cases:
-                case_detail = tool_get_case_detail(db, user_id, c['id'])
-                case_text += (
-                    f"- **Case #{c['case_number']}** at **{c['location']}**\n"
-                    f"  - **Hospitalization:** {c['hospital_name'] or 'N/A'} · Treatment: `{c['hospital_treatment_status']}`\n"
-                    f"  - **PM-RAHAT Status:** `{c['pmrahat_stage']}`\n"
-                    f"  - **Police Documentation:** `{c['police_stage']}` (Draft: `{case_detail.get('police_draft_status')}`)\n"
-                    f"  - **Insurance Claim:** `{c['insurance_stage']}`\n"
-                )
-                if case_detail.get('open_tasks'):
-                    t_titles = [f"`{t['title']}`" for t in case_detail['open_tasks'][:2]]
-                    case_text += f"  - **Pending Actions:** {', '.join(t_titles)}\n"
-
-                case_text += "\n"
-
-                citations.append(_make_citation(
-                    cite_id=f"cite_case_{c['id']}",
-                    cite_type="APPLICATION_RECORD",
-                    title=f"Accident Case Record: {c['case_number']}",
-                    snippet=f"Incident at {c['location']} on {c['incident_at']}. Hospital: {c['hospital_name']}.",
-                    url_or_path=f"/cases/{c['id']}",
-                    verification="verified",
-                ))
-                action_cards.append(_make_action_card(
-                    action_id=f"act_case_{c['id']}",
-                    action_type="OPEN_CASE",
-                    title=f"Open Workspace for {c['case_number']}",
-                    description=f"Manage timeline, hospital liaison, police draft approval, and evidence package.",
-                    payload={"case_id": c['id']},
-                    button_label="Open Case Workspace",
-                ))
+        if not can_cases:
+            case_text += "### Accident Cases\n*[Privacy Boundary] Case records access is disabled in your privacy settings.*\n\n"
         else:
-            case_text += (
-                "### Accident Case Tracking\n"
-                "You do not have any open accident cases recorded under your account. If an accident recently occurred, you can report it from the homepage.\n\n"
-            )
+            cases = tool_get_cases(db, user_id)
+            if cases:
+                case_text += "### Active Accident Cases\n"
+                for c in cases:
+                    case_detail = tool_get_case_detail(db, user_id, c['id'])
+                    case_text += (
+                        f"- **Case #{c['case_number']}** at **{c['location']}**\n"
+                        f"  - **Hospitalization:** {c['hospital_name'] or 'N/A'} · Treatment: `{c['hospital_treatment_status']}`\n"
+                        f"  - **PM-RAHAT Status:** `{c['pmrahat_stage']}`\n"
+                        f"  - **Police Documentation:** `{c['police_stage']}` (Draft: `{case_detail.get('police_draft_status')}`)\n"
+                        f"  - **Insurance Claim:** `{c['insurance_stage']}`\n"
+                    )
+                    if case_detail.get('open_tasks'):
+                        t_titles = [f"`{t['title']}`" for t in case_detail['open_tasks'][:2]]
+                        case_text += f"  - **Pending Actions:** {', '.join(t_titles)}\n"
+
+                    case_text += "\n"
+
+                    citations.append(_make_citation(
+                        cite_id=f"cite_case_{c['id']}",
+                        cite_type="APPLICATION_RECORD",
+                        title=f"Accident Case Record: {c['case_number']}",
+                        snippet=f"Incident at {c['location']} on {c['incident_at']}. Hospital: {c['hospital_name']}.",
+                        url_or_path=f"/cases/{c['id']}",
+                        verification="verified",
+                    ))
+                    action_cards.append(_make_action_card(
+                        action_id=f"act_case_{c['id']}",
+                        action_type="OPEN_CASE",
+                        title=f"Open Workspace for {c['case_number']}",
+                        description=f"Manage timeline, hospital liaison, police draft approval, and evidence package.",
+                        payload={"case_id": c['id']},
+                        button_label="Open Case Workspace",
+                    ))
+            else:
+                case_text += (
+                    "### Accident Case Tracking\n"
+                    "You do not have any open accident cases recorded under your account. If an accident recently occurred, you can report it from the homepage.\n\n"
+                )
 
     # Assemble response content
-    content_blocks = [emergency_callout, scheme_text, case_text, vehicle_text, doc_text]
+    content_blocks = [emergency_callout, scheme_text, medical_text, case_text, vehicle_text, doc_text]
     full_content = "\n".join(b for b in content_blocks if b.strip()).strip()
 
     # Generate smart follow-up suggestions
@@ -809,45 +1208,111 @@ def post_user_message(db: Session, user_id: str, conversation_id: str, user_text
     if not clean_text:
         raise ServiceError("Message cannot be empty")
 
+    now = utcnow()
+    # Compute sequence numbers
+    max_seq = db.scalar(
+        select(func.coalesce(func.max(ConversationMessage.sequence_number), 0))
+        .where(ConversationMessage.conversation_id == conversation_id)
+    ) or 0
+    user_seq = max_seq + 1
+    asst_seq = max_seq + 2
+
     # 1. Save user message
     user_msg = ConversationMessage(
         id=new_id("cmsg"),
         conversation_id=conversation_id,
         sender="user",
+        sender_type="user",
         content=clean_text,
+        content_format="text",
+        sequence_number=user_seq,
+        created_at=now,
     )
     db.add(user_msg)
 
     # 2. Update conversation title if default
     if conv.title in ("New Conversation", "New Chat", ""):
         conv.title = clean_text[:40].replace("\n", " ").strip()
-    conv.updated_at = utcnow()
-    db.commit()
+    conv.last_message_at = now
+    conv.updated_at = now
+    db.flush()
 
     # 3. Generate grounded context-aware response
     response_data = _generate_grounded_response(db, user_id, clean_text)
 
-    # 4. Save assistant message
+    # 4. Register action cards in AIActionLog for supervised execution
+    registered_cards = []
+    for card in response_data.get("action_cards", []):
+        act_id = new_id("aiact")
+        action_log = AIActionLog(
+            id=act_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=conv.case_id or card.get("payload", {}).get("case_id"),
+            action_type=card.get("action_type", "NAVIGATE"),
+            action_description=card.get("description", card.get("title", "")),
+            input_metadata=card.get("payload", {}),
+            output_metadata={},
+            action_status="awaiting_approval",
+            approval_required=True,
+            created_at=utcnow(),
+        )
+        db.add(action_log)
+        c_dict = dict(card)
+        c_dict["action_log_id"] = act_id
+        registered_cards.append(c_dict)
+
+    # 5. Save assistant message
     asst_msg = ConversationMessage(
         id=new_id("cmsg"),
         conversation_id=conversation_id,
         sender="assistant",
+        sender_type="assistant",
         content=response_data["content"],
+        content_format="markdown",
+        sequence_number=asst_seq,
+        source_references_json=response_data.get("citations", []),
         citations_json=json.dumps(response_data.get("citations", [])),
-        action_cards_json=json.dumps(response_data.get("action_cards", [])),
+        action_cards_json=json.dumps(registered_cards),
         suggested_followups_json=json.dumps(response_data.get("suggested_followups", [])),
+        ai_model_metadata={
+            "provider": conv.ai_provider or "gemini",
+            "model": conv.model_identifier or "gemini-1.5-flash",
+        },
+        token_usage_metadata={
+            "prompt_tokens": max(1, len(clean_text) // 4),
+            "completion_tokens": max(1, len(response_data["content"]) // 4),
+            "total_tokens": max(2, (len(clean_text) + len(response_data["content"])) // 4),
+        },
+        created_at=utcnow(),
     )
     db.add(asst_msg)
+    conv.last_message_at = utcnow()
     conv.updated_at = utcnow()
+
+    # 6. Audit log entry
+    audit.record_audit(
+        db=db,
+        actor_id=user_id,
+        actor_type="user",
+        action_type="send_ai_message",
+        resource_type="conversation",
+        resource_id=conversation_id,
+        case_id=conv.case_id,
+        result_summary=f"Sent message in conversation '{conv.title}'",
+    )
+
     db.commit()
 
     return {
         "id": asst_msg.id,
         "conversation_id": conversation_id,
         "sender": "assistant",
+        "sender_type": "assistant",
         "content": asst_msg.content,
+        "sequence_number": asst_msg.sequence_number,
         "citations": response_data.get("citations", []),
-        "action_cards": response_data.get("action_cards", []),
+        "action_cards": registered_cards,
         "suggested_followups": response_data.get("suggested_followups", []),
         "created_at": iso(asst_msg.created_at),
         "conversation_title": conv.title,

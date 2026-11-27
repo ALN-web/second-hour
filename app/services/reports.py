@@ -495,12 +495,14 @@ def approve_report(
             document_name=f"{report.title} (Approved v{version.version_number})",
             category="case_report",
             document_type="case_report",
+            file_name=f"{report.title}.pdf",
+            stored_path=version.storage_key,
             storage_key=version.storage_key,
             mime_type="application/pdf",
-            file_size_bytes=version.file_size_bytes,
+            file_size=version.file_size_bytes or 0,
             sha256=version.sha256 or hashlib.sha256(b"").hexdigest(),
             verification_status="verified",
-            description=f"Approved case report dossier (v{version.version_number}). Notes: {approval_notes or 'Approved by coordinator'}",
+            notes=f"Approved case report dossier (v{version.version_number}). Notes: {approval_notes or 'Approved by coordinator'}",
         )
         db.add(cdoc)
 
