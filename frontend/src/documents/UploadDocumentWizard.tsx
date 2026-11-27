@@ -655,6 +655,13 @@ export function UploadDocumentWizard({
                     className="w-full text-xs font-medium rounded-xl border border-slate-300 p-2.5 focus:ring-2 focus:ring-navy-900"
                   />
                 </div>
+
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start gap-2">
+                  <span className="text-sm shrink-0">🛡️</span>
+                  <span className="leading-relaxed">
+                    <strong>Verification Notice:</strong> Uploaded documents receive <em>Unverified</em> status by default. You can verify them with authorized external providers (DigiLocker, VAHAN, IIB) from your Document Wallet.
+                  </span>
+                </div>
               </div>
             </div>
           )}

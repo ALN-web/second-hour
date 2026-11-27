@@ -46,6 +46,12 @@ export interface VehicleSummary {
   main_image?: string | null
   owner_name?: string | null
   ownership_type: string
+  is_primary?: boolean
+  is_active?: boolean
+  verification_status?: 'verified' | 'unverified' | 'pending' | 'failed'
+  verification_provider?: string | null
+  verified_at?: string | null
+  verification_reference_id?: string | null
   insurance: VehicleInsurance
   doc_count: number
   photo_count: number

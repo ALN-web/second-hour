@@ -688,6 +688,10 @@ export default function App() {
                   onDeleteVehicle={async () => {
                     if (activeVehicle) await handleDeleteVehicle(activeVehicle.id)
                   }}
+                  onRefresh={async () => {
+                    if (activeVehicle) await loadVehicleDetail(activeVehicle.id)
+                    await loadVehicles()
+                  }}
                 />
               ) : (
                 <div className="max-w-6xl mx-auto px-4 sm:px-6 py-20 text-center">
@@ -722,6 +726,7 @@ export default function App() {
                 onReplaceFile={(doc) => setReplacingDoc(doc)}
                 onDeleteDocument={handleDeleteDocument}
                 onBackHome={navigateToHome}
+                onRefresh={loadDocuments}
               />
             )}
 

@@ -31,6 +31,7 @@ from app.services import claims as claim_svc
 from app.services import submissions as sub_svc
 from app.services import audit as audit_svc
 from app.services import privacy as privacy_svc
+from app.services import verification as verify_svc
 from app.services.common import PermissionDenied, ServiceError, iso, require_member
 
 app = FastAPI(title="Second Hour agent host")
@@ -1866,6 +1867,158 @@ def change_pwd(body: ChangePasswordPayload, user: User = Depends(current_user), 
 @app.post("/api/profile/security/delete-account")
 def delete_acct(body: DeleteAccountPayload, user: User = Depends(current_user), db=Depends(get_db)):
     return profile_svc.request_account_deletion(db, user.id, body.confirmation)
+
+
+# ------------------------------------------------------------------ Identity & Document Verification
+
+
+class OtpRequestPayload(BaseModel):
+    channel: str
+    target: str | None = None
+
+
+class OtpConfirmPayload(BaseModel):
+    channel: str
+    otp: str
+
+
+class DigiLockerInitiatePayload(BaseModel):
+    doc_type: str = "driving_licence"
+    redirect_uri: str = "http://localhost:5173/profile"
+
+
+class DigiLockerVerifyPayload(BaseModel):
+    document_id: str
+    consent_record_id: str | None = None
+
+
+class RetryVerificationPayload(BaseModel):
+    entity_type: str
+    entity_id: str
+
+
+@app.post("/api/verify/otp/request")
+def request_verification_otp_endpoint(
+    body: OtpRequestPayload,
+    request: Request,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    return verify_svc.request_otp(db, user.id, body.channel, body.target, ip_address=ip, user_agent=ua)
+
+
+@app.post("/api/verify/otp/confirm")
+def confirm_verification_otp_endpoint(
+    body: OtpConfirmPayload,
+    request: Request,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    return verify_svc.confirm_otp(db, user.id, body.channel, body.otp, ip_address=ip, user_agent=ua)
+
+
+@app.get("/api/verify/status")
+def get_verification_status_endpoint(
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return verify_svc.get_verification_overview(db, user.id)
+
+
+@app.get("/api/verify/history")
+def get_verification_history_endpoint(
+    entity_type: str | None = Query(None),
+    limit: int = Query(50),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return verify_svc.list_verification_history(db, user.id, entity_type=entity_type, limit=limit)
+
+
+@app.post("/api/verify/digilocker/initiate")
+def digilocker_initiate_endpoint(
+    body: DigiLockerInitiatePayload,
+    user: User = Depends(current_user),
+):
+    return verify_svc.DigiLockerAdapter.initiate_authorization(user.id, body.doc_type, body.redirect_uri)
+
+
+@app.post("/api/verify/digilocker/verify-doc")
+def digilocker_verify_doc_endpoint(
+    body: DigiLockerVerifyPayload,
+    request: Request,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    return verify_svc.DigiLockerAdapter.verify_identity_document(
+        db, user.id, body.document_id, consent_record_id=body.consent_record_id, ip_address=ip, user_agent=ua
+    )
+
+
+@app.post("/api/verify/vehicles/{vehicle_id}/vahan")
+def vahan_verify_vehicle_endpoint(
+    vehicle_id: str,
+    request: Request,
+    consent_record_id: str | None = Query(None),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    return verify_svc.VahanAdapter.verify_vehicle(
+        db, user.id, vehicle_id, consent_record_id=consent_record_id, ip_address=ip, user_agent=ua
+    )
+
+
+@app.post("/api/verify/insurance/{policy_id}/verify")
+def iib_verify_insurance_endpoint(
+    policy_id: str,
+    request: Request,
+    consent_record_id: str | None = Query(None),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    return verify_svc.InsuranceAdapter.verify_policy(
+        db, user.id, policy_id, consent_record_id=consent_record_id, ip_address=ip, user_agent=ua
+    )
+
+
+@app.post("/api/verify/documents/{document_id}/verify")
+def verify_document_endpoint(
+    document_id: str,
+    request: Request,
+    provider: str | None = Query(None),
+    consent_record_id: str | None = Query(None),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    return verify_svc.verify_document(
+        db, user.id, document_id, provider=provider, consent_record_id=consent_record_id, ip_address=ip, user_agent=ua
+    )
+
+
+@app.post("/api/verify/retry")
+def retry_verification_endpoint(
+    body: RetryVerificationPayload,
+    request: Request,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    return verify_svc.retry_verification(
+        db, user.id, body.entity_type, body.entity_id, ip_address=ip, user_agent=ua
+    )
 
 
 # ------------------------------------------------------------------ MCP panel

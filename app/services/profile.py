@@ -206,56 +206,17 @@ def update_personal_info(db: Session, user_id: str, data: dict[str, Any]) -> dic
 # ==============================================================================
 
 def request_verification_otp(db: Session, user_id: str, channel: str) -> dict[str, Any]:
-    """Initiate OTP verification for email or mobile."""
-    user = db.get(User, user_id)
-    if not user:
-        raise ServiceError("User not found")
-
-    target = user.email if channel == "email" else user.phone
-    if not target:
-        raise ServiceError(f"No {channel} recorded on your profile to verify.")
-
-    # In demo environment, OTP 123456 is generated
-    demo_otp = "123456"
-    _audit(db, user_id, f"request_{channel}_otp", f"Verification OTP requested for {channel}: {target}")
-
-    return {
-        "status": "otp_sent",
-        "channel": channel,
-        "target": target,
-        "message": f"Verification code sent to {target}. (Demo OTP: {demo_otp})",
-        "demo_code": demo_otp,
-    }
+    """Initiate cryptographic OTP verification for email or mobile."""
+    from app.services import verification as verify_svc
+    return verify_svc.request_otp(db, user_id, channel)
 
 
 def confirm_verification_otp(db: Session, user_id: str, channel: str, otp: str) -> dict[str, Any]:
-    """Confirm verification code and update verified status."""
-    user = db.get(User, user_id)
-    if not user:
-        raise ServiceError("User not found")
-
-    clean_otp = otp.strip()
-    # Accept 123456 in demo mode
-    if clean_otp != "123456":
-        raise ServiceError("Invalid verification code. Please check and try again.")
-
-    if channel == "email":
-        user.email_verified = True
-    elif channel == "phone":
-        user.phone_verified = True
-    else:
-        raise ServiceError("Invalid verification channel")
-
-    user.updated_at = utcnow()
-    _audit(db, user_id, f"verify_{channel}_success", f"Successfully verified {channel}")
-    db.commit()
-
-    return {
-        "status": "verified",
-        "channel": channel,
-        "message": f"Your {channel} has been successfully verified.",
-        "profile": get_profile(db, user_id),
-    }
+    """Confirm verification code via secure constant-time hash comparison and update status."""
+    from app.services import verification as verify_svc
+    res = verify_svc.confirm_otp(db, user_id, channel, otp)
+    res["profile"] = get_profile(db, user_id)
+    return res
 
 
 # ==============================================================================
@@ -807,6 +768,10 @@ def get_identity_documents(db: Session, user_id: str) -> list[dict[str, Any]]:
             "document_type": d.document_type,
             "masked_number": _mask_doc_number(d.document_type, d.document_number),
             "verification_status": d.verification_status,
+            "verification_provider": getattr(d, "verification_provider", None),
+            "verified_at": iso(d.verified_at) if getattr(d, "verified_at", None) else None,
+            "verification_reference_id": getattr(d, "verification_reference_id", None),
+            "failure_reason": getattr(d, "verification_failure_reason", None),
             "issuing_authority": d.issuing_authority or "Government Authority",
             "expiry_date": iso(d.expiry_date) if d.expiry_date else None,
             "file_name": d.file_name,
