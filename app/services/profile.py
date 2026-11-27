@@ -28,6 +28,7 @@ from app.db import (
     CentralDocument,
     EmergencyContact,
     EmergencyContactPermission,
+    MedicalAccessLog,
     MedicalInformation,
     User,
     UserAddress,
@@ -288,13 +289,20 @@ def list_emergency_contacts(db: Session, user_id: str) -> list[dict[str, Any]]:
             "created_at": iso(c.created_at),
             "updated_at": iso(c.updated_at),
             "permissions": {
-                "can_notify_accident": perm.can_notify_accident if perm else True,
-                "can_receive_case_updates": perm.can_receive_case_updates if perm else True,
-                "can_access_case": perm.can_access_case if perm else False,
+                "can_notify_accident_sos": getattr(perm, "can_notify_accident_sos", getattr(perm, "can_notify_accident", True)) if perm else True,
+                "can_receive_case_sms": getattr(perm, "can_receive_case_sms", getattr(perm, "can_receive_case_updates", True)) if perm else True,
+                "can_receive_whatsapp_updates": getattr(perm, "can_receive_whatsapp_updates", False) if perm else False,
+                "has_workspace_access": getattr(perm, "has_workspace_access", getattr(perm, "can_access_case", False)) if perm else False,
                 "permitted_case_ids": json.loads(perm.permitted_case_ids or "[]") if perm else [],
-                "can_view_limited_case_info": perm.can_view_limited_case_info if perm else True,
+                "workspace_role": getattr(perm, "workspace_role", "viewer") if perm else "viewer",
+                "can_view_limited_summary_only": getattr(perm, "can_view_limited_summary_only", getattr(perm, "can_view_limited_case_info", True)) if perm else True,
                 "can_view_medical": perm.can_view_medical if perm else False,
                 "can_view_documents": perm.can_view_documents if perm else False,
+                # Legacy compatibility keys
+                "can_notify_accident": getattr(perm, "can_notify_accident_sos", getattr(perm, "can_notify_accident", True)) if perm else True,
+                "can_receive_case_updates": getattr(perm, "can_receive_case_sms", getattr(perm, "can_receive_case_updates", True)) if perm else True,
+                "can_access_case": getattr(perm, "has_workspace_access", getattr(perm, "can_access_case", False)) if perm else False,
+                "can_view_limited_case_info": getattr(perm, "can_view_limited_summary_only", getattr(perm, "can_view_limited_case_info", True)) if perm else True,
             },
         })
     return results
@@ -344,11 +352,13 @@ def add_emergency_contact(db: Session, user_id: str, data: dict[str, Any]) -> di
     perm = EmergencyContactPermission(
         id=new_id("ecperm"),
         contact_id=contact.id,
-        can_notify_accident=perms_in.get("can_notify_accident", True),
-        can_receive_case_updates=perms_in.get("can_receive_case_updates", True),
-        can_access_case=perms_in.get("can_access_case", False),
+        can_notify_accident_sos=perms_in.get("can_notify_accident_sos", perms_in.get("can_notify_accident", True)),
+        can_receive_case_sms=perms_in.get("can_receive_case_sms", perms_in.get("can_receive_case_updates", True)),
+        can_receive_whatsapp_updates=perms_in.get("can_receive_whatsapp_updates", False),
+        has_workspace_access=perms_in.get("has_workspace_access", perms_in.get("can_access_case", False)),
         permitted_case_ids=json.dumps(perms_in.get("permitted_case_ids", [])),
-        can_view_limited_case_info=perms_in.get("can_view_limited_case_info", True),
+        workspace_role=perms_in.get("workspace_role", "viewer"),
+        can_view_limited_summary_only=perms_in.get("can_view_limited_summary_only", perms_in.get("can_view_limited_case_info", True)),
         can_view_medical=perms_in.get("can_view_medical", False),
         can_view_documents=perms_in.get("can_view_documents", False),
     )
@@ -395,13 +405,25 @@ def update_emergency_contact(db: Session, user_id: str, contact_id: str, data: d
             db.add(perm)
 
         p = data["permissions"]
-        if "can_notify_accident" in p: perm.can_notify_accident = p["can_notify_accident"]
-        if "can_receive_case_updates" in p: perm.can_receive_case_updates = p["can_receive_case_updates"]
-        if "can_access_case" in p: perm.can_access_case = p["can_access_case"]
+        if "can_notify_accident_sos" in p: perm.can_notify_accident_sos = bool(p["can_notify_accident_sos"])
+        elif "can_notify_accident" in p: perm.can_notify_accident_sos = bool(p["can_notify_accident"])
+
+        if "can_receive_case_sms" in p: perm.can_receive_case_sms = bool(p["can_receive_case_sms"])
+        elif "can_receive_case_updates" in p: perm.can_receive_case_sms = bool(p["can_receive_case_updates"])
+
+        if "can_receive_whatsapp_updates" in p: perm.can_receive_whatsapp_updates = bool(p["can_receive_whatsapp_updates"])
+
+        if "has_workspace_access" in p: perm.has_workspace_access = bool(p["has_workspace_access"])
+        elif "can_access_case" in p: perm.has_workspace_access = bool(p["can_access_case"])
+
         if "permitted_case_ids" in p: perm.permitted_case_ids = json.dumps(p["permitted_case_ids"])
-        if "can_view_limited_case_info" in p: perm.can_view_limited_case_info = p["can_view_limited_case_info"]
-        if "can_view_medical" in p: perm.can_view_medical = p["can_view_medical"]
-        if "can_view_documents" in p: perm.can_view_documents = p["can_view_documents"]
+        if "workspace_role" in p: perm.workspace_role = p["workspace_role"]
+
+        if "can_view_limited_summary_only" in p: perm.can_view_limited_summary_only = bool(p["can_view_limited_summary_only"])
+        elif "can_view_limited_case_info" in p: perm.can_view_limited_summary_only = bool(p["can_view_limited_case_info"])
+
+        if "can_view_medical" in p: perm.can_view_medical = bool(p["can_view_medical"])
+        if "can_view_documents" in p: perm.can_view_documents = bool(p["can_view_documents"])
         perm.updated_at = utcnow()
 
     contact.updated_at = utcnow()
@@ -409,6 +431,43 @@ def update_emergency_contact(db: Session, user_id: str, contact_id: str, data: d
     db.commit()
 
     return {"status": "success", "message": "Emergency contact updated."}
+
+
+def update_emergency_contact_permissions(
+    db: Session,
+    user_id: str,
+    contact_id: str,
+    **permissions: Any,
+) -> dict[str, Any]:
+    """Dedicated helper to update granular emergency contact permissions."""
+    update_emergency_contact(db, user_id, contact_id, {"permissions": permissions})
+    contact = db.get(EmergencyContact, contact_id)
+    if not contact or not contact.permission:
+        raise ServiceError("Emergency contact permission not found")
+    perm = contact.permission
+    p_ids = []
+    if perm.permitted_case_ids:
+        try:
+            p_ids = json.loads(perm.permitted_case_ids)
+        except Exception:
+            p_ids = []
+    return {
+        "contact_id": contact_id,
+        "can_notify_accident_sos": perm.can_notify_accident_sos,
+        "can_receive_case_sms": perm.can_receive_case_sms,
+        "can_receive_whatsapp_updates": perm.can_receive_whatsapp_updates,
+        "has_workspace_access": perm.has_workspace_access,
+        "permitted_case_ids": p_ids,
+        "workspace_role": perm.workspace_role,
+        "can_view_limited_summary_only": perm.can_view_limited_summary_only,
+        "can_view_medical": perm.can_view_medical,
+        "can_view_documents": perm.can_view_documents,
+        # Backward compatibility aliases
+        "can_notify_accident": perm.can_notify_accident,
+        "can_receive_case_updates": perm.can_receive_case_updates,
+        "can_access_case": perm.can_access_case,
+        "can_view_limited_case_info": perm.can_view_limited_case_info,
+    }
 
 
 def delete_emergency_contact(db: Session, user_id: str, contact_id: str) -> bool:
@@ -464,13 +523,108 @@ def reorder_emergency_contacts(db: Session, user_id: str, ordered_ids: list[str]
 
 
 # ==============================================================================
-# Optional & Privacy-Restricted Medical Information
+# Optional & Privacy-Restricted Medical Information & Access Logging
 # ==============================================================================
 
-def get_medical_info(db: Session, user_id: str) -> dict[str, Any]:
-    """Retrieve user's optional medical information."""
+def record_medical_access(
+    db: Session,
+    user_id: str,
+    actor_id: str,
+    access_purpose: str = "user_self_view",
+    authorization_type: str = "self_authorized",
+    fields_accessed: list[str] | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> MedicalAccessLog:
+    """Record an append-only audit trail event for medical information access."""
+    log_entry = MedicalAccessLog(
+        user_id=user_id,
+        actor_id=actor_id,
+        access_purpose=access_purpose,
+        authorization_type=authorization_type,
+        fields_accessed=json.dumps(fields_accessed or ["blood_group", "allergies", "medical_conditions", "medications", "emergency_notes"]),
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    db.add(log_entry)
+    db.flush()
+    return log_entry
+
+
+def get_medical_info(
+    db: Session,
+    user_id: str,
+    actor_id: str | None = None,
+    access_purpose: str = "user_self_view",
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+    purpose: str | None = None,
+) -> dict[str, Any]:
+    """Retrieve user's optional medical information with authorization verification and audit logging."""
+    effective_actor = actor_id or user_id
+    effective_purpose = purpose or access_purpose
+
+    # If actor is not the owner, enforce authorization
+    if effective_actor != user_id:
+        authorized = False
+        auth_type = "unauthorized"
+
+        # Check if actor is an emergency contact with can_view_medical permission
+        contact = db.scalars(
+            select(EmergencyContact)
+            .where(EmergencyContact.user_id == user_id, (EmergencyContact.id == effective_actor) | (EmergencyContact.email == effective_actor))
+        ).first()
+        if contact:
+            perm = db.scalars(select(EmergencyContactPermission).where(EmergencyContactPermission.contact_id == contact.id)).first()
+            if perm and perm.can_view_medical:
+                authorized = True
+                auth_type = "explicit_emergency_contact_permission"
+
+        # Check if actor is a case member with medical access in an active case of this user
+        if not authorized:
+            member = db.scalars(
+                select(CaseMember)
+                .join(Case, Case.id == CaseMember.case_id)
+                .where(Case.created_by == user_id, CaseMember.user_id == effective_actor)
+            ).first()
+            if member and getattr(member, "can_view_medical", False):
+                authorized = True
+                auth_type = "explicit_case_member_permission"
+
+        if not authorized and effective_purpose != "emergency_ems_triage":
+            raise PermissionDenied("Access to medical information requires explicit, purpose-specific authorization.")
+
+        if not authorized and effective_purpose == "emergency_ems_triage":
+            auth_type = "ems_emergency_protocol"
+    else:
+        auth_type = "self_authorized"
+
     med = db.scalars(select(MedicalInformation).where(MedicalInformation.user_id == user_id)).first()
+
+    # Determine accessed fields
+    fields = []
+    if med:
+        if med.blood_group: fields.append("blood_group")
+        if med.allergies: fields.append("allergies")
+        if med.medical_conditions: fields.append("medical_conditions")
+        if med.medications: fields.append("medications")
+        if med.emergency_notes: fields.append("emergency_notes")
+
+    # Record the access event
+    record_medical_access(
+        db,
+        user_id=user_id,
+        actor_id=effective_actor,
+        access_purpose=effective_purpose,
+        authorization_type=auth_type,
+        fields_accessed=fields,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    db.commit()
+
     return {
+        "user_id": user_id,
         "disclaimer": "This information is optional and is intended to support emergency preparedness. It does not replace professional medical assessment.",
         "blood_group": med.blood_group if med else None,
         "allergies": med.allergies if med else None,
@@ -481,6 +635,30 @@ def get_medical_info(db: Session, user_id: str) -> dict[str, Any]:
         "share_with_ai": med.share_with_ai if med else False,
         "updated_at": iso(med.updated_at) if med else None,
     }
+
+
+def list_medical_access_logs(db: Session, user_id: str) -> list[dict[str, Any]]:
+    """Retrieve audit trail of medical access events for the user."""
+    logs = db.scalars(
+        select(MedicalAccessLog)
+        .where(MedicalAccessLog.user_id == user_id)
+        .order_by(MedicalAccessLog.accessed_at.desc())
+        .limit(50)
+    ).all()
+    return [
+        {
+            "id": log.id,
+            "user_id": log.user_id,
+            "actor_id": log.actor_id,
+            "access_purpose": log.access_purpose,
+            "authorization_type": log.authorization_type,
+            "fields_accessed": json.loads(log.fields_accessed or "[]"),
+            "ip_address": log.ip_address,
+            "user_agent": log.user_agent,
+            "accessed_at": iso(log.accessed_at),
+        }
+        for log in logs
+    ]
 
 
 def update_medical_info(db: Session, user_id: str, data: dict[str, Any]) -> dict[str, Any]:

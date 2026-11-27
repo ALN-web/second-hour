@@ -211,10 +211,20 @@ def make_demo_assets(incident_ist: datetime) -> None:
 def seed() -> dict:
     if engine.dialect.name == "postgresql":
         from sqlalchemy import text
-        with engine.connect() as conn:
-            conn.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"))
-            conn.commit()
-        Base.metadata.create_all(engine)
+        # Safe non-destructive reset: clean rows in reverse FK dependency order without dropping schema, tables, or migrations
+        with engine.begin() as conn:
+            existing_tables = set(
+                r[0] for r in conn.execute(text(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';"
+                )).fetchall()
+            )
+            delete_stmts = [
+                f"DELETE FROM {t.name}"
+                for t in reversed(Base.metadata.sorted_tables)
+                if t.name in existing_tables and t.name != "schema_migrations"
+            ]
+            if delete_stmts:
+                conn.exec_driver_sql("; ".join(delete_stmts) + ";")
     else:
         Base.metadata.drop_all(engine)
         Base.metadata.create_all(engine)
@@ -294,22 +304,26 @@ def seed() -> dict:
     perm1 = EmergencyContactPermission(
         id="ecp_arjun",
         contact_id=ec1.id,
-        can_notify_accident=True,
-        can_receive_case_updates=True,
-        can_access_case=True,
+        can_notify_accident_sos=True,
+        can_receive_case_sms=True,
+        can_receive_whatsapp_updates=True,
+        has_workspace_access=True,
         permitted_case_ids='["case_demo"]',
-        can_view_limited_case_info=True,
+        workspace_role="editor",
+        can_view_limited_summary_only=False,
         can_view_medical=False,
         can_view_documents=True,
     )
     perm2 = EmergencyContactPermission(
         id="ecp_ramesh",
         contact_id=ec2.id,
-        can_notify_accident=True,
-        can_receive_case_updates=False,
-        can_access_case=False,
+        can_notify_accident_sos=True,
+        can_receive_case_sms=False,
+        can_receive_whatsapp_updates=False,
+        has_workspace_access=False,
         permitted_case_ids="[]",
-        can_view_limited_case_info=True,
+        workspace_role="viewer",
+        can_view_limited_summary_only=True,
         can_view_medical=False,
         can_view_documents=False,
     )

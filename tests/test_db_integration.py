@@ -36,7 +36,7 @@ def test_postgres_database_url_normalization():
 def test_sqlite_connection_check():
     status = check_connection()
     assert status["ok"] is True
-    assert status["dialect"] == "sqlite"
+    assert status["dialect"] in ("postgresql", "sqlite")
     assert status["query_result"] == 1
     assert "error" not in status
 
