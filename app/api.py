@@ -19,7 +19,7 @@ from sqlalchemy import select
 from app import config
 from app.agent import loop as agent
 from app.agent import mcp_client as M
-from app.db import AuditLog, ChatMessage, PendingAction, Report, SessionLocal, User, init_db
+from app.db import AuditLog, ChatMessage, PendingAction, Report, SessionLocal, User, check_connection, init_db
 from app.services import cases as case_svc
 from app.services import central_documents as central_docs_svc
 from app.services import documents as doc_svc
@@ -78,12 +78,26 @@ def users(db=Depends(get_db)):
 
 @app.get("/api/health")
 async def health():
+    db_info = check_connection()
     try:
         info = await M.discover()
-        return {"ok": True, "mcp": True, "llm": bool(config.ANTHROPIC_API_KEY), "model": config.LLM_MODEL,
-                "tts": bool(config.ELEVENLABS_API_KEY), "tools": len(info["tools"])}
+        return {
+            "ok": True,
+            "database": {"ok": db_info.get("ok"), "dialect": db_info.get("dialect"), "target": db_info.get("target")},
+            "mcp": True,
+            "llm": bool(config.ANTHROPIC_API_KEY),
+            "model": config.LLM_MODEL,
+            "tts": bool(config.ELEVENLABS_API_KEY),
+            "tools": len(info["tools"]),
+        }
     except Exception as e:  # noqa: BLE001
-        return {"ok": True, "mcp": False, "llm": bool(config.ANTHROPIC_API_KEY), "error": str(e)[:200]}
+        return {
+            "ok": True,
+            "database": {"ok": db_info.get("ok"), "dialect": db_info.get("dialect"), "target": db_info.get("target")},
+            "mcp": False,
+            "llm": bool(config.ANTHROPIC_API_KEY),
+            "error": str(e)[:200],
+        }
 
 
 @app.get("/api/cases")

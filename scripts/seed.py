@@ -209,8 +209,15 @@ def make_demo_assets(incident_ist: datetime) -> None:
 
 
 def seed() -> dict:
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
+    if engine.dialect.name == "postgresql":
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"))
+            conn.commit()
+        Base.metadata.create_all(engine)
+    else:
+        Base.metadata.drop_all(engine)
+        Base.metadata.create_all(engine)
     if config.UPLOAD_DIR.exists():
         shutil.rmtree(config.UPLOAD_DIR)
     config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)

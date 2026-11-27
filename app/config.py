@@ -15,6 +15,7 @@ VEHICLE_DOCS_DIR = VEHICLE_DIR / "documents"
 VEHICLE_PHOTOS_DIR = VEHICLE_DIR / "photos"
 CENTRAL_DOCS_DIR = DATA_DIR / "documents"
 DB_PATH = DATA_DIR / "secondhour.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 KNOWLEDGE_DIR = ROOT / "knowledge"
 DEMO_ASSETS_DIR = ROOT / "demo_assets"
 
