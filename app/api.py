@@ -1043,8 +1043,15 @@ def reorder_contacts(body: ReorderContactsPayload, user: User = Depends(current_
 
 
 @app.get("/api/profile/medical")
-def get_medical(user: User = Depends(current_user), db=Depends(get_db)):
-    return profile_svc.get_medical_info(db, user.id)
+def get_medical(request: Request, user: User = Depends(current_user), db=Depends(get_db)):
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    return profile_svc.get_medical_info(db, user.id, actor_id=user.id, access_purpose="user_self_view", ip_address=ip, user_agent=ua)
+
+
+@app.get("/api/profile/medical/access-logs")
+def get_medical_access_logs(user: User = Depends(current_user), db=Depends(get_db)):
+    return profile_svc.list_medical_access_logs(db, user.id)
 
 
 @app.patch("/api/profile/medical")

@@ -9,8 +9,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Generator
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, event, select, text
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, event, select, text
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship as orm_relationship, sessionmaker
 
 from app.config import DATABASE_URL, DB_PATH
 
@@ -437,7 +437,7 @@ class ConversationMessage(Base):
 class EmergencyContact(Base):
     __tablename__ = "emergency_contacts"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("econtact"))
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     full_name: Mapped[str] = mapped_column(String)
     relationship: Mapped[str] = mapped_column(String)  # Parent, Spouse, Sibling, Child, Relative, Friend, Other
     mobile_number: Mapped[str] = mapped_column(String)
@@ -449,26 +449,74 @@ class EmergencyContact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
+    permission: Mapped[EmergencyContactPermission | None] = orm_relationship(
+        "EmergencyContactPermission", back_populates="contact", uselist=False, cascade="all, delete-orphan"
+    )
+
 
 class EmergencyContactPermission(Base):
     __tablename__ = "emergency_contact_permissions"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("ecperm"))
-    contact_id: Mapped[str] = mapped_column(ForeignKey("emergency_contacts.id", ondelete="CASCADE"), index=True)
-    can_notify_accident: Mapped[bool] = mapped_column(Boolean, default=True)
-    can_receive_case_updates: Mapped[bool] = mapped_column(Boolean, default=True)
-    can_access_case: Mapped[bool] = mapped_column(Boolean, default=False)
+    contact_id: Mapped[str] = mapped_column(ForeignKey("emergency_contacts.id", ondelete="CASCADE"), unique=True, index=True)
+
+    # Outbound Notification Dispatch Permissions (SMS / WhatsApp / SOS)
+    can_notify_accident_sos: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_receive_case_sms: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_receive_whatsapp_updates: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Interactive Account & Case Workspace Permissions
+    has_workspace_access: Mapped[bool] = mapped_column(Boolean, default=False)
     permitted_case_ids: Mapped[str] = mapped_column(String, default="[]")  # JSON list of case IDs
-    can_view_limited_case_info: Mapped[bool] = mapped_column(Boolean, default=True)
+    workspace_role: Mapped[str] = mapped_column(String, default="viewer")
+    can_view_limited_summary_only: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # Sensitive Resource Overrides (Strictly False by default)
     can_view_medical: Mapped[bool] = mapped_column(Boolean, default=False)
     can_view_documents: Mapped[bool] = mapped_column(Boolean, default=False)
+
     granted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    contact: Mapped[EmergencyContact | None] = orm_relationship("EmergencyContact", back_populates="permission")
+
+    # Backward compatibility accessors
+    @property
+    def can_notify_accident(self) -> bool:
+        return self.can_notify_accident_sos
+
+    @can_notify_accident.setter
+    def can_notify_accident(self, val: bool) -> None:
+        self.can_notify_accident_sos = val
+
+    @property
+    def can_receive_case_updates(self) -> bool:
+        return self.can_receive_case_sms
+
+    @can_receive_case_updates.setter
+    def can_receive_case_updates(self, val: bool) -> None:
+        self.can_receive_case_sms = val
+
+    @property
+    def can_access_case(self) -> bool:
+        return self.has_workspace_access
+
+    @can_access_case.setter
+    def can_access_case(self, val: bool) -> None:
+        self.has_workspace_access = val
+
+    @property
+    def can_view_limited_case_info(self) -> bool:
+        return self.can_view_limited_summary_only
+
+    @can_view_limited_case_info.setter
+    def can_view_limited_case_info(self, val: bool) -> None:
+        self.can_view_limited_summary_only = val
 
 
 class MedicalInformation(Base):
     __tablename__ = "medical_information"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("medinfo"))
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
     blood_group: Mapped[str | None] = mapped_column(String, nullable=True)
     allergies: Mapped[str | None] = mapped_column(Text, nullable=True)
     medical_conditions: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -480,10 +528,26 @@ class MedicalInformation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class MedicalAccessLog(Base):
+    """Append-only audit trail for viewing or sharing quarantined medical information."""
+    __tablename__ = "medical_access_logs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    actor_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    access_purpose: Mapped[str] = mapped_column(String)  # 'emergency_ems_triage' | 'hospital_intake' | 'user_self_view' | 'ai_assistant_query'
+    authorization_type: Mapped[str] = mapped_column(String)  # 'explicit_user_consent' | 'ems_emergency_protocol' | 'self_authorized'
+    fields_accessed: Mapped[str] = mapped_column(Text, default="[]")
+    ip_address: Mapped[str | None] = mapped_column(String, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String, nullable=True)
+    accessed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class UserAddress(Base):
     __tablename__ = "user_addresses"
+    __table_args__ = (UniqueConstraint("user_id", "address_type", name="uq_user_address_type"),)
+
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("uaddr"))
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     address_type: Mapped[str] = mapped_column(String)  # current | permanent
     address_line_1: Mapped[str] = mapped_column(String)
     address_line_2: Mapped[str | None] = mapped_column(String, nullable=True)
