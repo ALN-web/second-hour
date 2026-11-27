@@ -26,6 +26,9 @@ from app.services import documents as doc_svc
 from app.services import vehicles as veh_svc
 from app.services import assistant as asst_svc
 from app.services import profile as profile_svc
+from app.services import reports as report_svc
+from app.services import claims as claim_svc
+from app.services import submissions as sub_svc
 from app.services.common import PermissionDenied, ServiceError, iso, require_member
 
 app = FastAPI(title="Second Hour agent host")
@@ -61,6 +64,12 @@ def current_user(x_user_id: str = Header(default=""), db=Depends(get_db)) -> Use
     if not u:
         raise HTTPException(401, "Pick a demo user first")
     return u
+
+
+def current_user_optional(x_user_id: str = Header(default=""), db=Depends(get_db)) -> User | None:
+    if not x_user_id:
+        return None
+    return db.get(User, x_user_id)
 
 
 def mcp_error(payload: dict) -> HTTPException:
@@ -626,23 +635,365 @@ async def make_report(case_id: str, user: User = Depends(current_user)):
     return out
 
 
+# ------------------------------------------------------------------ Phase 4 Reports, Claims & Submissions Schemas
+
+class GenerateReportPayload(BaseModel):
+    report_type: str = "accident_summary"
+    title: str | None = None
+    generation_method: str = "ai_assisted"
+    custom_notes: str = ""
+
+
+class ApproveReportPayload(BaseModel):
+    version_id: str | None = None
+    notes: str = ""
+
+
+class ReviseReportPayload(BaseModel):
+    updated_content: dict
+    notes: str = ""
+
+
+class InsuranceClaimCreatePayload(BaseModel):
+    vehicle_id: str | None = None
+    policy_id: str | None = None
+    insurer_name: str | None = None
+    policy_number: str | None = None
+    claim_reference_number: str | None = None
+    claim_type: str = "own_damage"
+    incident_date: str | None = None
+    description: str = ""
+    estimated_amount: float | None = None
+    approved_amount: float | None = None
+    claim_status: str = "draft"
+    filed_at: str | None = None
+    surveyor_name: str | None = None
+    surveyor_phone: str | None = None
+    cashless_garage: str | None = None
+    metadata: dict | None = None
+
+
+class ClaimStatusUpdatePayload(BaseModel):
+    status: str
+    reason: str = ""
+
+
+class ExternalSubmissionCreatePayload(BaseModel):
+    report_id: str | None = None
+    claim_id: str | None = None
+    external_org_name: str
+    external_org_type: str = "insurer"
+    external_reference_number: str | None = None
+    submission_method: str = "manual_user_submission"
+    submission_status: str = "draft"
+    metadata: dict | None = None
+
+
+class ConfirmManualSubmissionPayload(BaseModel):
+    external_reference_number: str | None = None
+    notes: str = ""
+
+
+class AcknowledgeSubmissionPayload(BaseModel):
+    external_reference_number: str
+    response_payload: dict | None = None
+
+
+class FailSubmissionPayload(BaseModel):
+    reason: str
+
+
+# ------------------------------------------------------------------ Phase 4 Reports Endpoints
+
 @app.get("/api/cases/{case_id}/reports")
 def list_reports(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
-    require_member(db, user.id, case_id)
-    rows = db.scalars(select(Report).where(Report.case_id == case_id).order_by(Report.created_at.desc())).all()
-    return [{"report_id": r.id, "created_at": iso(r.created_at), "download_url": f"/api/cases/{case_id}/reports/{r.id}",
-             "filename": Path(r.path).name} for r in rows]
+    """List all persisted reports for an accident case with active version metadata."""
+    return report_svc.list_case_reports(db, user.id, case_id)
+
+
+@app.post("/api/cases/{case_id}/reports")
+def generate_report_endpoint(
+    case_id: str,
+    body: GenerateReportPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Generate a formal report draft from verified case data, documents, and evidence."""
+    return report_svc.generate_report(
+        db=db,
+        actor_id=user.id,
+        case_id=case_id,
+        report_type=body.report_type,
+        title=body.title,
+        generation_method=body.generation_method,
+        custom_notes=body.custom_notes,
+    )
 
 
 @app.get("/api/cases/{case_id}/reports/{report_id}")
-def download_report(case_id: str, report_id: str, uid: str = "", x_user_id: str = Header(default=""), db=Depends(get_db)):
-    # uid query param lets a plain <a href> download work; membership is still enforced.
-    actor = x_user_id or uid
-    require_member(db, actor, case_id)
-    r = db.get(Report, report_id)
-    if not r or r.case_id != case_id:
-        raise HTTPException(404, "Report not found")
-    return FileResponse(r.path, media_type="application/pdf", filename=Path(r.path).name)
+def get_report_or_download(
+    case_id: str,
+    report_id: str,
+    download: bool = False,
+    uid: str = "",
+    x_user_id: str = Header(default=""),
+    user: User | None = Depends(current_user_optional),
+    db=Depends(get_db),
+):
+    """Get structured report details or download active PDF file."""
+    actor = (user.id if user else None) or x_user_id or uid
+    if not actor:
+        raise HTTPException(401, "Authentication required")
+
+    if download:
+        path, media_type, filename = report_svc.get_report_file(db, actor, case_id, report_id)
+        return FileResponse(path, media_type=media_type, filename=filename)
+
+    return report_svc.get_report_details(db, actor, case_id, report_id)
+
+
+@app.get("/api/cases/{case_id}/reports/{report_id}/file")
+def download_report_file(
+    case_id: str,
+    report_id: str,
+    uid: str = "",
+    x_user_id: str = Header(default=""),
+    user: User | None = Depends(current_user_optional),
+    db=Depends(get_db),
+):
+    """Stream active report PDF file."""
+    actor = (user.id if user else None) or x_user_id or uid
+    if not actor:
+        raise HTTPException(401, "Authentication required")
+    path, media_type, filename = report_svc.get_report_file(db, actor, case_id, report_id)
+    return FileResponse(path, media_type=media_type, filename=filename)
+
+
+@app.get("/api/cases/{case_id}/reports/{report_id}/versions/{version_id}/file")
+def download_report_version_file(
+    case_id: str,
+    report_id: str,
+    version_id: str,
+    uid: str = "",
+    x_user_id: str = Header(default=""),
+    user: User | None = Depends(current_user_optional),
+    db=Depends(get_db),
+):
+    """Stream specific immutable report version PDF file."""
+    actor = (user.id if user else None) or x_user_id or uid
+    if not actor:
+        raise HTTPException(401, "Authentication required")
+    path, media_type, filename = report_svc.get_report_file(db, actor, case_id, report_id, version_id)
+    return FileResponse(path, media_type=media_type, filename=filename)
+
+
+@app.post("/api/cases/{case_id}/reports/{report_id}/approve")
+def approve_report_endpoint(
+    case_id: str,
+    report_id: str,
+    body: ApproveReportPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Explicit human coordinator approval of a specific report version."""
+    return report_svc.approve_report(
+        db=db,
+        actor_id=user.id,
+        case_id=case_id,
+        report_id=report_id,
+        version_id=body.version_id,
+        approval_notes=body.notes,
+    )
+
+
+@app.post("/api/cases/{case_id}/reports/{report_id}/revise")
+def revise_report_endpoint(
+    case_id: str,
+    report_id: str,
+    body: ReviseReportPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Create a new version of an existing report with user revisions (previous versions preserved)."""
+    return report_svc.revise_report(
+        db=db,
+        actor_id=user.id,
+        case_id=case_id,
+        report_id=report_id,
+        updated_content=body.updated_content,
+        revision_notes=body.notes,
+    )
+
+
+@app.delete("/api/cases/{case_id}/reports/{report_id}")
+def archive_report_endpoint(
+    case_id: str,
+    report_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Archive a report."""
+    return report_svc.archive_report(db, user.id, case_id, report_id)
+
+
+# ------------------------------------------------------------------ Phase 4 Insurance Claims Endpoints
+
+@app.get("/api/cases/{case_id}/claims")
+def list_claims_endpoint(
+    case_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """List all insurance claims recorded for a case."""
+    return claim_svc.list_case_claims(db, user.id, case_id)
+
+
+@app.post("/api/cases/{case_id}/claims")
+def create_claim_endpoint(
+    case_id: str,
+    body: InsuranceClaimCreatePayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Create a new insurance claim draft."""
+    return claim_svc.create_insurance_claim(db, user.id, case_id, body.dict())
+
+
+@app.get("/api/cases/{case_id}/claims/{claim_id}")
+def get_claim_details_endpoint(
+    case_id: str,
+    claim_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Get full claim details including external submission history."""
+    return claim_svc.get_claim_details(db, user.id, case_id, claim_id)
+
+
+@app.patch("/api/cases/{case_id}/claims/{claim_id}")
+def update_claim_endpoint(
+    case_id: str,
+    claim_id: str,
+    body: dict,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Update claim fields."""
+    return claim_svc.update_claim(db, user.id, case_id, claim_id, body)
+
+
+@app.post("/api/cases/{case_id}/claims/{claim_id}/status")
+def update_claim_status_endpoint(
+    case_id: str,
+    claim_id: str,
+    body: ClaimStatusUpdatePayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Transition claim status with audit logging."""
+    return claim_svc.update_claim_status(db, user.id, case_id, claim_id, body.status, body.reason)
+
+
+@app.delete("/api/cases/{case_id}/claims/{claim_id}")
+def delete_claim_endpoint(
+    case_id: str,
+    claim_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Soft-delete insurance claim."""
+    return claim_svc.delete_claim(db, user.id, case_id, claim_id)
+
+
+# ------------------------------------------------------------------ Phase 4 External Submissions Endpoints
+
+@app.get("/api/cases/{case_id}/submissions")
+def list_submissions_endpoint(
+    case_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """List all external authority and insurer filings for a case."""
+    return sub_svc.list_case_submissions(db, user.id, case_id)
+
+
+@app.post("/api/cases/{case_id}/submissions")
+def create_submission_endpoint(
+    case_id: str,
+    body: ExternalSubmissionCreatePayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Create a new external submission package."""
+    return sub_svc.create_external_submission(db, user.id, case_id, body.dict())
+
+
+@app.get("/api/cases/{case_id}/submissions/{submission_id}")
+def get_submission_endpoint(
+    case_id: str,
+    submission_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Get external submission details."""
+    return sub_svc.get_submission_details(db, user.id, case_id, submission_id)
+
+
+@app.post("/api/cases/{case_id}/submissions/{submission_id}/confirm-manual")
+def confirm_manual_submission_endpoint(
+    case_id: str,
+    submission_id: str,
+    body: ConfirmManualSubmissionPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Explicit user confirmation of manual external submission dispatch."""
+    return sub_svc.confirm_manual_submission(
+        db=db,
+        actor_id=user.id,
+        case_id=case_id,
+        submission_id=submission_id,
+        external_reference_number=body.external_reference_number,
+        notes=body.notes,
+    )
+
+
+@app.post("/api/cases/{case_id}/submissions/{submission_id}/acknowledge")
+def acknowledge_submission_endpoint(
+    case_id: str,
+    submission_id: str,
+    body: AcknowledgeSubmissionPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Record verified external authority receipt / acknowledgement."""
+    return sub_svc.record_submission_acknowledgement(
+        db=db,
+        actor_id=user.id,
+        case_id=case_id,
+        submission_id=submission_id,
+        external_reference_number=body.external_reference_number,
+        response_payload=body.response_payload,
+    )
+
+
+@app.post("/api/cases/{case_id}/submissions/{submission_id}/fail")
+def fail_submission_endpoint(
+    case_id: str,
+    submission_id: str,
+    body: FailSubmissionPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Record external submission rejection or delivery failure."""
+    return sub_svc.record_submission_failure(
+        db=db,
+        actor_id=user.id,
+        case_id=case_id,
+        submission_id=submission_id,
+        failure_reason=body.reason,
+    )
+
 
 
 # ------------------------------------------------------------------ voice (ElevenLabs)

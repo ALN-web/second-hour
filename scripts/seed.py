@@ -30,7 +30,11 @@ from app.db import (  # noqa: E402
     DocumentVersion,
     EmergencyContact,
     EmergencyContactPermission,
+    ExternalSubmission,
+    InsuranceClaim,
     MedicalInformation,
+    Report,
+    ReportVersion,
     SessionLocal,
     Task,
     TimelineEvent,
@@ -997,6 +1001,108 @@ def seed() -> dict:
             at=incident_utc + timedelta(hours=5),
         ),
     ])
+    db.flush()
+
+    # Seed Phase 4 Report & Version
+    rpt_demo = Report(
+        id="rpt_demo_summary",
+        case_id=case.id,
+        created_by="u_priya",
+        title="Comprehensive Accident Incident & Damage Report",
+        report_type="accident_summary",
+        status="approved",
+        generation_source="ai_generated",
+        approved_by="u_priya",
+        approved_at=incident_utc + timedelta(hours=4),
+        is_active=True,
+    )
+    db.add(rpt_demo)
+    db.flush()
+
+    rptv_demo = ReportVersion(
+        id="rptv_demo_v1",
+        report_id=rpt_demo.id,
+        version_number=1,
+        content_json={
+            "report_type": "accident_summary",
+            "title": "Comprehensive Accident Incident & Damage Report",
+            "case_number": case.case_number,
+            "incident": {
+                "location": case.approximate_location,
+                "weather": case.weather_conditions,
+                "collision_type": case.accident_type,
+            },
+            "ai_synthesis": {
+                "is_ai_generated": True,
+                "model": "gemini-1.5-flash-grounded",
+                "summary": "Verified collision overview and damage inventory synthesized for insurer and police review.",
+            },
+            "missing_information": [],
+        },
+        storage_key="reports/SH-2026-0001_rpt_demo_v1.pdf",
+        file_size_bytes=18400,
+        sha256="c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4",
+        generated_by="u_priya",
+        generation_method="ai_assisted",
+        ai_model="gemini-1.5-flash-grounded",
+        source_references_json=[
+            {"type": "case", "id": case.id},
+            {"type": "vehicle", "id": "veh_demo_honda"},
+            {"type": "person", "id": "cip_demo_ravi"},
+        ],
+        version_status="approved",
+        created_at=incident_utc + timedelta(hours=3, minutes=30),
+    )
+    db.add(rptv_demo)
+    db.flush()
+
+    rpt_demo.current_version_id = rptv_demo.id
+
+    # Seed Phase 4 Insurance Claim
+    claim_demo = InsuranceClaim(
+        id="claim_demo_1",
+        case_id=case.id,
+        vehicle_id="veh_demo_honda",
+        policy_id="vpol_demo_1",
+        created_by="u_priya",
+        insurer_name="Tata AIG General Insurance",
+        policy_number="POL-99283401-2026",
+        claim_reference_number="CLM-AIG-0001-2026",
+        claim_type="own_damage",
+        incident_date=incident_utc,
+        description="Comprehensive own-damage claim for front bumper and headlight assembly replacement.",
+        estimated_amount=45000.0,
+        approved_amount=42500.0,
+        claim_status="approved_by_user",
+        filed_at=incident_utc + timedelta(hours=3),
+        surveyor_name="Anand Verma",
+        surveyor_phone="+91 98450 19284",
+        cashless_garage="Authorized Honda Service Centre, Koramangala",
+        metadata_json={"cashless_approved": True, "network_garage": True},
+        is_active=True,
+        created_at=incident_utc + timedelta(hours=3),
+    )
+    db.add(claim_demo)
+    db.flush()
+
+    # Seed Phase 4 External Submission
+    sub_demo = ExternalSubmission(
+        id="exsub_demo_1",
+        case_id=case.id,
+        report_id=rpt_demo.id,
+        claim_id=claim_demo.id,
+        submitted_by="u_priya",
+        external_org_name="Tata AIG General Insurance Claims Portal",
+        external_org_type="insurer",
+        external_reference_number="TATAAIG-ACK-9021-2026",
+        submission_method="portal_upload",
+        submission_status="submitted",
+        submitted_at=incident_utc + timedelta(hours=5),
+        metadata_json={"manual_user_confirmed": True, "portal_submission_id": "CLM-SUB-2026-9021"},
+        created_at=incident_utc + timedelta(hours=4, minutes=30),
+    )
+    db.add(sub_demo)
+    db.flush()
     db.commit()
     db.close()
     make_demo_assets(incident_ist)

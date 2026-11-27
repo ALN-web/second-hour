@@ -16,6 +16,10 @@ class PermissionDenied(ServiceError):
     pass
 
 
+class NotFoundError(ServiceError):
+    pass
+
+
 def iso(dt: datetime | date | None) -> str | None:
     if not dt:
         return None

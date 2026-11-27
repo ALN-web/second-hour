@@ -555,6 +555,14 @@ def get_case_workspace(db: Session, actor_id: str, case_id: str) -> dict:
     case_evidence_items = list_case_evidence(db, actor_id, case_id)
     status_transitions = list_case_status_transitions(db, actor_id, case_id)
 
+    # Phase 4: Reports, insurance claims, and external submissions
+    from app.services import reports as report_svc
+    from app.services import claims as claim_svc
+    from app.services import submissions as sub_svc
+    reports_list = report_svc.list_case_reports(db, actor_id, case_id)
+    claims_list = claim_svc.list_case_claims(db, actor_id, case_id)
+    submissions_list = sub_svc.list_case_submissions(db, actor_id, case_id)
+
     return {
         "case": {
             "id": case.id,
@@ -610,6 +618,9 @@ def get_case_workspace(db: Session, actor_id: str, case_id: str) -> dict:
         "involved_people": involved_people,
         "evidence_items": case_evidence_items,
         "status_transitions": status_transitions,
+        "reports": reports_list,
+        "claims": claims_list,
+        "submissions": submissions_list,
     }
 
 

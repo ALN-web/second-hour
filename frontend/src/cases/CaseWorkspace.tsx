@@ -7,6 +7,7 @@ import { EvidenceTab } from './tabs/EvidenceTab'
 import { HospitalTab } from './tabs/HospitalTab'
 import { PoliceInsuranceTab } from './tabs/PoliceInsuranceTab'
 import { FamilyTasksTab } from './tabs/FamilyTasksTab'
+import { ReportsClaimsTab } from './tabs/ReportsClaimsTab'
 import { CaseAssistantDrawer } from './CaseAssistantDrawer'
 
 interface CaseWorkspaceProps {
@@ -23,6 +24,7 @@ export type CaseWorkspaceTab =
   | 'hospital'
   | 'police-insurance'
   | 'family-tasks'
+  | 'reports-claims'
 
 const WORKSPACE_TABS: Array<{ id: CaseWorkspaceTab; label: string; icon: string }> = [
   { id: 'overview', label: 'Overview', icon: '📍' },
@@ -31,6 +33,7 @@ const WORKSPACE_TABS: Array<{ id: CaseWorkspaceTab; label: string; icon: string 
   { id: 'hospital', label: 'Hospital & PM-RAHAT', icon: '🏥' },
   { id: 'police-insurance', label: 'Police & Insurance', icon: '👮' },
   { id: 'family-tasks', label: 'Family & Tasks', icon: '👥' },
+  { id: 'reports-claims', label: 'Reports & Claims', icon: '📑' },
 ]
 
 export function CaseWorkspace({
@@ -251,6 +254,16 @@ export function CaseWorkspace({
             caseId={caseId}
             familyMembers={workspace.family_members}
             tasks={workspace.tasks}
+            onRefresh={refresh}
+          />
+        )}
+
+        {activeTab === 'reports-claims' && (
+          <ReportsClaimsTab
+            caseId={caseId}
+            reports={workspace.reports || []}
+            claims={workspace.claims || []}
+            submissions={workspace.submissions || []}
             onRefresh={refresh}
           />
         )}

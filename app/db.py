@@ -376,7 +376,106 @@ class Report(Base):
     case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"))
     path: Mapped[str] = mapped_column(String)
     created_by: Mapped[str] = mapped_column(String)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    title: Mapped[str] = mapped_column(String, default="Accident Case Summary Report")
+    report_type: Mapped[str] = mapped_column(String, default="accident_summary")
+    status: Mapped[str] = mapped_column(String, default="draft", index=True)  # draft | ready_for_review | approved | rejected | archived
+    current_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("report_versions.id", ondelete="SET NULL", use_alter=True), nullable=True
+    )
+    generation_source: Mapped[str] = mapped_column(String, default="ai_generated")  # ai_generated | user_created | system_generated
+    path: Mapped[str | None] = mapped_column(String, nullable=True)  # Legacy file path / compatibility
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    # Relationships
+    versions: Mapped[list[ReportVersion]] = orm_relationship(
+        "ReportVersion", back_populates="report", cascade="all, delete-orphan", foreign_keys="[ReportVersion.report_id]"
+    )
+    current_version: Mapped[ReportVersion | None] = orm_relationship(
+        "ReportVersion", foreign_keys=[current_version_id], post_update=True
+    )
+
+
+class ReportVersion(Base):
+    __tablename__ = "report_versions"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("rptv"))
+    report_id: Mapped[str] = mapped_column(ForeignKey("reports.id", ondelete="CASCADE"), index=True)
+    version_number: Mapped[int] = mapped_column(Integer, default=1)
+    content_json: Mapped[dict | list] = mapped_column(JSON, default=dict)
+    storage_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    file_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    sha256: Mapped[str | None] = mapped_column(String, nullable=True)
+    generated_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    generation_method: Mapped[str] = mapped_column(String, default="ai_assisted")  # ai_assisted | user_drafted | template_compiled
+    ai_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_references_json: Mapped[dict | list] = mapped_column(JSON, default=list)
+    version_status: Mapped[str] = mapped_column(String, default="draft")  # draft | ready_for_review | approved | superseded | rejected
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    report: Mapped[Report] = orm_relationship("Report", back_populates="versions", foreign_keys=[report_id])
+
+
+class InsuranceClaim(Base):
+    __tablename__ = "insurance_claims"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("claim"))
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    vehicle_id: Mapped[str | None] = mapped_column(ForeignKey("vehicles.id", ondelete="SET NULL"), nullable=True)
+    policy_id: Mapped[str | None] = mapped_column(ForeignKey("vehicle_insurance_policies.id", ondelete="SET NULL"), nullable=True)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    insurer_name: Mapped[str] = mapped_column(String)
+    policy_number: Mapped[str] = mapped_column(String)
+    claim_reference_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    claim_type: Mapped[str] = mapped_column(String, default="own_damage")  # own_damage | third_party_liability | comprehensive | personal_accident
+    incident_date: Mapped[datetime] = mapped_column(DateTime)
+    description: Mapped[str] = mapped_column(Text, default="")
+    estimated_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    approved_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    claim_status: Mapped[str] = mapped_column(String, default="draft", index=True)
+    # draft | preparing | ready_for_review | approved_by_user | submitted | under_review | additional_info_required | approved_by_insurer | rejected | settled | withdrawn
+    filed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    surveyor_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    surveyor_phone: Mapped[str | None] = mapped_column(String, nullable=True)
+    cashless_garage: Mapped[str | None] = mapped_column(String, nullable=True)
+    metadata_json: Mapped[dict | list | None] = mapped_column(JSON, default=dict, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    # Relationships
+    submissions: Mapped[list[ExternalSubmission]] = orm_relationship("ExternalSubmission", back_populates="claim", cascade="all, delete-orphan")
+
+
+class ExternalSubmission(Base):
+    __tablename__ = "external_submissions"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("exsub"))
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    report_id: Mapped[str | None] = mapped_column(ForeignKey("reports.id", ondelete="SET NULL"), nullable=True)
+    claim_id: Mapped[str | None] = mapped_column(ForeignKey("insurance_claims.id", ondelete="SET NULL"), nullable=True)
+    submitted_by: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    external_org_name: Mapped[str] = mapped_column(String)  # e.g. "Tata AIG General Insurance", "HSR Layout Police Station", "PM-RAHAT Portal"
+    external_org_type: Mapped[str] = mapped_column(String, default="insurer")  # insurer | police | hospital | government | court | legal
+    external_reference_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    submission_method: Mapped[str] = mapped_column(String, default="manual_user_submission")  # manual_user_submission | email | portal_upload | physical_handover | api
+    submission_status: Mapped[str] = mapped_column(String, default="draft", index=True)  # draft | queued | submitted | acknowledged | rejected | failed
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    response_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict | list | None] = mapped_column(JSON, default=dict, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    # Relationships
+    claim: Mapped[InsuranceClaim | None] = orm_relationship("InsuranceClaim", back_populates="submissions")
 
 
 class PendingAction(Base):
