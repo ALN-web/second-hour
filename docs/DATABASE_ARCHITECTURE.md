@@ -1,31 +1,62 @@
 # Second Hour: Database Architecture Specification
 **Database Engine:** Neon Serverless PostgreSQL (PostgreSQL 18+)  
-**Document Status:** Final Design Proposal (Pending Implementation Approval)  
+**Document Status:** Final Design Specification (Refined & Approved in Principle)  
 **Target Environment:** Development & Production Branches  
 
 ---
 
-## 1. Architectural Principles & Standards
+## 1. Architectural Principles & Security Foundations
 
-### 1.1 Object Storage Separation
-- **No Binary Columns in PostgreSQL:** Files (PDFs, crash scene photos, vehicle RC copies, medical bills) are **never** stored as `BYTEA` or binary blobs in the relational database.
-- **Reference by Storage Key:** The database stores metadata, file size, MIME type, cryptographic SHA-256 digest, and an immutable `storage_key` pointing to private cloud object storage (e.g. S3-compatible or local private media volume in development).
-- **Access Control:** File downloads and uploads are mediated exclusively via backend authentication or short-lived pre-signed URLs.
+### 1.1 Object Storage Separation & Reusable Storage Adapter
+- **Zero Binary Blobs in PostgreSQL:** Files (PDFs, crash scene photographs, vehicle registration documents, medical bills, FIR reports) are **never** stored as `BYTEA` or binary blobs in the relational database.
+- **Pure Metadata Storage:** PostgreSQL stores metadata, file size in bytes, MIME type, cryptographic SHA-256 digest, and an immutable `storage_key`.
+- **Reusable Storage Adapter Contract:**
+  ```python
+  class StorageAdapter(Protocol):
+      def put_object(self, storage_key: str, data: bytes, mime_type: str) -> str:
+          """Persist file bytes to private storage and return storage key."""
+          ...
 
-### 1.2 Identifier Conventions
-- **Primary Keys:** Prefixed UUID / alphanumeric identifiers (`u_`, `case_`, `veh_`, `cdoc_`, `rpt_`, `act_`, `cmsg_`) to ensure type safety, unambiguous logging, and complete cross-environment predictability without sequence collisions.
-- **Foreign Keys:** Explicit referential integrity with strict cascading rules:
-  - User-owned dependent records (`user_addresses`, `medical_information`, `emergency_contacts`, `vehicles`) use `ON DELETE CASCADE`.
-  - Referential references (`case_vehicles.vehicle_id`, `central_documents.resource_id`) use `ON DELETE SET NULL` to preserve historical post-accident audit trails.
+      def get_object(self, storage_key: str) -> bytes:
+          """Retrieve raw file bytes from private storage."""
+          ...
 
-### 1.3 Timestamps & Timezones
-- **Universal UTC:** All timestamp columns use `TIMESTAMPTZ` (SQLAlchemy `DateTime(timezone=True)`) with server-side default `CURRENT_TIMESTAMP`.
-- **Soft Deletion:** Sensitive resources such as Central Documents implement `deleted_at TIMESTAMPTZ NULL` to support recovery and statutory motor-accident evidence retention.
+      def get_presigned_download_url(self, storage_key: str, expires_in_seconds: int = 900) -> str:
+          """Generate a short-lived (default 15 minutes) authorized download URL."""
+          ...
 
-### 1.4 PII & Data Privacy Protections
-- **No Full Aadhaar Numbers:** Highly sensitive national identifiers (Aadhaar, PAN) are **never** stored unmasked. Only masked display tokens (e.g., `XXXX-XXXX-4912`, `DL-*****8491`) are stored for verification badges.
-- **Quarantined Medical Data:** `medical_information` is isolated in a 1-to-1 table with explicit boolean gates (`share_with_ems`, `share_with_ai`) defaulting to `FALSE`.
-- **Granular Emergency Contact Permissions:** Emergency contacts do not inherit case or document access. Each contact has a dedicated row in `emergency_contact_permissions` defining explicit capabilities.
+      def delete_object(self, storage_key: str) -> bool:
+          """Permanently remove an object from storage."""
+          ...
+  ```
+- **Environment Adaptability:**
+  - *Local Development:* `LocalStorageAdapter` stores private assets under `data/storage/` (outside git).
+  - *Production Cloud:* `S3CompatibleStorageAdapter` communicates with private, encrypted buckets (AWS S3, Cloudflare R2, Google Cloud Storage, or MinIO) via standard S3 API signatures without application code changes.
+  - *Durable Storage Guardrail:* Production environments never rely on local ephemeral disks.
+
+### 1.2 Authentication & User Identity Preservation
+- **Preserved Existing Columns:** The existing `users` table schema is preserved without breaking changes. Columns (`id`, `name`, `role_label`, `email`, `email_verified`, `phone`, `phone_verified`, `date_of_birth`, `gender`, `profile_photo`, `preferred_language`, `account_status`, `created_at`, `updated_at`) remain 100% compatible.
+- **Identity Agnostic Primary Key:** `id VARCHAR(64) PRIMARY KEY` seamlessly accommodates existing demo credentials (`u_priya`, `u_arjun`) as well as production UUIDs (e.g., `usr_0194f48b-821d-79e4-8025-a74e50d68012` or UUID v4/v7).
+- **Referential Integrity:** All dependent child tables reference `users(id)` via `VARCHAR(64)`.
+
+### 1.3 Strict Privacy, Medical Isolation & Access Control
+- **Notification Permissions vs. Account Access:** Outbound emergency notification dispatch (SOS alerts, SMS/WhatsApp updates to family) is strictly separated from interactive case workspace login access.
+- **Quarantined Medical Data:** `medical_information` is isolated in a 1:1 table. Fields are private by default (`share_with_ems = FALSE`, `share_with_ai = FALSE`).
+- **Purpose-Specific Medical Access Logging:** Viewing medical records requires an explicit purpose, audited in `medical_access_logs`.
+- **Document Access Auditing:** Viewing, downloading, sharing, or exporting central wallet documents is tracked in `document_access_logs`.
+- **National Identifier Privacy:** **Never store raw Aadhaar or PAN numbers.** Only masked display representations (e.g. `XXXX-XXXX-4912`, `DL-*****8491`) are stored for verification badges.
+
+### 1.4 Append-Only Auditability & Security Redaction
+- **Append-Only Guarantee:** `audit_log`, `case_status_transitions`, `document_access_logs`, and `medical_access_logs` are strictly append-only. Database triggers or application constraints prohibit `UPDATE` and `DELETE` operations on audit tables.
+- **Credential & Secret Redaction Policy:** Audit payloads **never** store passwords, database connection strings, authorization tokens, bearer headers, or raw sensitive file contents. All payloads pass through a redaction filter prior to persistence.
+
+### 1.5 Verified Domain Rules
+- **Historical Insurance Records:** Vehicle insurance policies are preserved historically. Uploading a renewal policy marks the previous record as superseded rather than deleting or overwriting it.
+- **PM-RAHAT Statutory Alignment:** Aligned with MoRTH Gazette S.O. 2489(E) (4 June 2025) and PIB release (11 March 2026):
+  - Maximum ₹1,50,000 cashless trauma stabilization for up to 7 days from the incident.
+  - Hospital intimation to Police within 24 hours (extended to 48 hours for life-threatening conditions).
+  - Configurable policy parameter lookup rather than rigid hardcoded schema locks.
+- **Submission Independence:** External authority submissions (PM-RAHAT, Traffic Police) are tracked in `external_submissions` with independent lifecycle states (`draft`, `queued`, `submitted`, `acknowledged`, `rejected`, `failed`), distinct from internal report approval.
 
 ---
 
@@ -34,7 +65,7 @@
 ### Domain 1: Users, Profiles & Emergency Readiness
 
 #### 1. `users`
-Central user entity representing accident victims, family coordinators, or authorized members.
+Existing authentication and identity root entity.
 ```sql
 CREATE TABLE users (
     id VARCHAR(64) PRIMARY KEY,
@@ -46,7 +77,7 @@ CREATE TABLE users (
     phone_verified BOOLEAN DEFAULT FALSE NOT NULL,
     date_of_birth DATE NULL,
     gender VARCHAR(32) NULL,
-    profile_photo_url TEXT NULL,
+    profile_photo TEXT NULL,
     preferred_language VARCHAR(50) DEFAULT 'English' NOT NULL,
     account_status VARCHAR(32) DEFAULT 'active' NOT NULL,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -57,7 +88,7 @@ CREATE UNIQUE INDEX ix_users_phone ON users(phone) WHERE phone IS NOT NULL AND p
 ```
 
 #### 2. `user_addresses`
-Physical and permanent residences for emergency logistics and legal jurisdiction.
+Current and permanent residences for emergency logistics and legal jurisdiction.
 ```sql
 CREATE TABLE user_addresses (
     id VARCHAR(64) PRIMARY KEY,
@@ -78,7 +109,7 @@ CREATE INDEX ix_user_addresses_user ON user_addresses(user_id);
 ```
 
 #### 3. `emergency_contacts`
-Designated relatives, guardians, and advocates with prioritized notification hierarchy.
+Designated relatives, guardians, and advocates with prioritized escalation order.
 ```sql
 CREATE TABLE emergency_contacts (
     id VARCHAR(64) PRIMARY KEY,
@@ -98,16 +129,21 @@ CREATE INDEX ix_emergency_contacts_user_prio ON emergency_contacts(user_id, prio
 ```
 
 #### 4. `emergency_contact_permissions`
-Fine-grained access control boundaries enforced per emergency contact.
+Fine-grained access controls cleanly separating notification dispatch from account and case access.
 ```sql
 CREATE TABLE emergency_contact_permissions (
     id VARCHAR(64) PRIMARY KEY,
     contact_id VARCHAR(64) NOT NULL UNIQUE REFERENCES emergency_contacts(id) ON DELETE CASCADE,
-    can_notify_accident BOOLEAN DEFAULT TRUE NOT NULL,
-    can_receive_case_updates BOOLEAN DEFAULT TRUE NOT NULL,
-    can_access_case BOOLEAN DEFAULT FALSE NOT NULL,
+    -- Outbound Notification Dispatch Permissions (SMS / WhatsApp / SOS)
+    can_notify_accident_sos BOOLEAN DEFAULT TRUE NOT NULL,
+    can_receive_case_sms BOOLEAN DEFAULT TRUE NOT NULL,
+    can_receive_whatsapp_updates BOOLEAN DEFAULT FALSE NOT NULL,
+    -- Interactive Account & Workspace Access Permissions
+    has_workspace_access BOOLEAN DEFAULT FALSE NOT NULL,
     permitted_case_ids JSONB DEFAULT '[]'::jsonb NOT NULL,
-    can_view_limited_case_info BOOLEAN DEFAULT TRUE NOT NULL,
+    workspace_role VARCHAR(32) DEFAULT 'viewer' NOT NULL, -- 'viewer' | 'editor'
+    can_view_limited_summary_only BOOLEAN DEFAULT TRUE NOT NULL,
+    -- Explicit Sensitive Resource Overrides (Strictly FALSE by default)
     can_view_medical BOOLEAN DEFAULT FALSE NOT NULL,
     can_view_documents BOOLEAN DEFAULT FALSE NOT NULL,
     granted_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -117,7 +153,7 @@ CREATE INDEX ix_ec_permissions_contact ON emergency_contact_permissions(contact_
 ```
 
 #### 5. `medical_information`
-Sensitive medical profile used for emergency triage and PM-RAHAT hospital intake.
+Sensitive personal medical profile quarantined from general application access.
 ```sql
 CREATE TABLE medical_information (
     id VARCHAR(64) PRIMARY KEY,
@@ -135,12 +171,29 @@ CREATE TABLE medical_information (
 CREATE INDEX ix_medical_info_user ON medical_information(user_id);
 ```
 
+#### 6. `medical_access_logs`
+Purpose-specific access audit trail for viewing or sharing quarantined medical information.
+```sql
+CREATE TABLE medical_access_logs (
+    id BIGSERIAL PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    actor_id VARCHAR(64) NOT NULL REFERENCES users(id),
+    access_purpose VARCHAR(100) NOT NULL, -- 'emergency_ems_triage' | 'hospital_intake' | 'user_self_view' | 'ai_assistant_query'
+    authorization_type VARCHAR(64) NOT NULL, -- 'explicit_user_consent' | 'ems_emergency_protocol'
+    fields_accessed JSONB NOT NULL, -- e.g. ["blood_group", "allergies"]
+    ip_address VARCHAR(45) NULL,
+    user_agent VARCHAR(255) NULL,
+    accessed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE INDEX ix_med_access_user_time ON medical_access_logs(user_id, accessed_at);
+```
+
 ---
 
 ### Domain 2: Vehicles & Central Documents Management
 
-#### 6. `vehicles`
-Registered vehicles managed by users for instant crash assistance and document association.
+#### 7. `vehicles`
+Registered motor vehicles managed by the user.
 ```sql
 CREATE TABLE vehicles (
     id VARCHAR(64) PRIMARY KEY,
@@ -170,8 +223,8 @@ CREATE INDEX ix_vehicles_user ON vehicles(user_id);
 CREATE INDEX ix_vehicles_reg ON vehicles(registration_number);
 ```
 
-#### 7. `vehicle_photos`
-Vehicle condition photos for insurance underwriting and post-accident damage baseline.
+#### 8. `vehicle_photos`
+Photographic records of vehicle condition referencing object storage.
 ```sql
 CREATE TABLE vehicle_photos (
     id VARCHAR(64) PRIMARY KEY,
@@ -187,8 +240,8 @@ CREATE TABLE vehicle_photos (
 CREATE INDEX ix_vehicle_photos_vehicle ON vehicle_photos(vehicle_id);
 ```
 
-#### 8. `central_documents`
-Unified document wallet serving as the single source of truth for personal, vehicle, and accident documents.
+#### 9. `central_documents`
+Central document wallet: single source of truth across Personal, Vehicle, and Case views.
 ```sql
 CREATE TABLE central_documents (
     id VARCHAR(64) PRIMARY KEY,
@@ -197,11 +250,11 @@ CREATE TABLE central_documents (
     document_type VARCHAR(64) NOT NULL, -- 'rc' | 'insurance' | 'puc' | 'driving_licence' | 'hospital_bill' | 'medical_report' | 'fir' | 'other'
     category VARCHAR(64) NOT NULL,      -- 'personal' | 'driving_licence' | 'vehicle' | 'insurance' | 'medical' | 'accident_case' | 'other'
     file_name VARCHAR(255) NOT NULL,
-    storage_key TEXT NOT NULL,
+    storage_key TEXT NOT NULL,          -- Private object storage key
     mime_type VARCHAR(100) NOT NULL,
     file_size_bytes INTEGER DEFAULT 0 NOT NULL,
     sha256 VARCHAR(64) NULL,
-    document_number_masked VARCHAR(100) NULL,
+    document_number_masked VARCHAR(100) NULL, -- Masked identifier (never unmasked Aadhaar)
     issuing_authority VARCHAR(150) NULL,
     issue_date DATE NULL,
     expiry_date DATE NULL,
@@ -219,8 +272,8 @@ CREATE INDEX ix_central_docs_resource ON central_documents(resource_type, resour
 CREATE INDEX ix_central_docs_expiry ON central_documents(expiry_date);
 ```
 
-#### 9. `document_versions`
-Audit log of document revisions, re-uploads, and renewal replacements.
+#### 10. `document_versions`
+Cryptographically validated historical revisions for re-uploaded or renewed wallet documents.
 ```sql
 CREATE TABLE document_versions (
     id VARCHAR(64) PRIMARY KEY,
@@ -238,8 +291,26 @@ CREATE TABLE document_versions (
 CREATE INDEX ix_document_versions_doc ON document_versions(document_id);
 ```
 
-#### 10. `vehicle_insurance_policies`
-Active motor insurance records linking directly to verified central documents.
+#### 11. `document_access_logs`
+Append-only audit trail for viewing, downloading, exporting, or sharing sensitive documents.
+```sql
+CREATE TABLE document_access_logs (
+    id BIGSERIAL PRIMARY KEY,
+    document_id VARCHAR(64) NOT NULL REFERENCES central_documents(id) ON DELETE CASCADE,
+    actor_id VARCHAR(64) NOT NULL REFERENCES users(id),
+    action VARCHAR(32) NOT NULL, -- 'view_metadata' | 'download_file' | 'presigned_url_generated' | 'shared_with_third_party'
+    access_channel VARCHAR(32) NOT NULL, -- 'web_dashboard' | 'mobile_api' | 'mcp_assistant' | 'emergency_dispatch'
+    purpose VARCHAR(100) NULL,   -- 'claim_processing' | 'police_submission' | 'user_download'
+    ip_address VARCHAR(45) NULL,
+    user_agent VARCHAR(255) NULL,
+    accessed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE INDEX ix_doc_access_doc_time ON document_access_logs(document_id, accessed_at);
+CREATE INDEX ix_doc_access_actor_time ON document_access_logs(actor_id, accessed_at);
+```
+
+#### 12. `vehicle_insurance_policies`
+Motor insurance policies preserving complete historical coverage and renewal lineage.
 ```sql
 CREATE TABLE vehicle_insurance_policies (
     id VARCHAR(64) PRIMARY KEY,
@@ -250,17 +321,21 @@ CREATE TABLE vehicle_insurance_policies (
     start_date DATE NULL,
     expiry_date DATE NULL,
     document_id VARCHAR(64) NULL REFERENCES central_documents(id) ON DELETE SET NULL,
+    is_current_policy BOOLEAN DEFAULT TRUE NOT NULL,
+    policy_status VARCHAR(32) DEFAULT 'active' NOT NULL, -- 'active' | 'expired' | 'renewed' | 'cancelled'
+    superseded_by_policy_id VARCHAR(64) NULL REFERENCES vehicle_insurance_policies(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 CREATE INDEX ix_vehicle_insurance_vehicle ON vehicle_insurance_policies(vehicle_id);
+CREATE INDEX ix_vehicle_insurance_active ON vehicle_insurance_policies(vehicle_id, is_current_policy);
 ```
 
 ---
 
 ### Domain 3: Accident Cases, Multi-Party Involvement & Evidence
 
-#### 11. `cases`
-Central accident incident management record coordinating hospital, police, PM-RAHAT, and family actions.
+#### 13. `cases`
+Master accident incident workspace coordinating hospital, police, PM-RAHAT, and family actions.
 ```sql
 CREATE TABLE cases (
     id VARCHAR(64) PRIMARY KEY,
@@ -312,8 +387,8 @@ CREATE INDEX ix_cases_incident_at ON cases(incident_at);
 CREATE INDEX ix_cases_created_by ON cases(created_by);
 ```
 
-#### 12. `case_status_transitions`
-Immutable audit log recording every transition of case status with author and rationale.
+#### 14. `case_status_transitions`
+Append-only log tracing every state transition of an accident case.
 ```sql
 CREATE TABLE case_status_transitions (
     id VARCHAR(64) PRIMARY KEY,
@@ -321,14 +396,15 @@ CREATE TABLE case_status_transitions (
     from_status VARCHAR(32) NOT NULL,
     to_status VARCHAR(32) NOT NULL,
     changed_by VARCHAR(64) NOT NULL REFERENCES users(id),
+    transition_trigger VARCHAR(64) DEFAULT 'manual_user_action' NOT NULL, -- 'manual_user_action' | 'hospital_intimation' | 'police_fir_filed' | 'claim_settled'
     reason TEXT NULL,
     transitioned_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 CREATE INDEX ix_case_status_trans_case ON case_status_transitions(case_id, transitioned_at);
 ```
 
-#### 13. `case_members`
-Collaborative workspace permissions designating coordinators, editors, and family viewers.
+#### 15. `case_members`
+Collaborative workspace permissions with strict per-resource capability enforcement.
 ```sql
 CREATE TABLE case_members (
     case_id VARCHAR(64) NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
@@ -336,15 +412,19 @@ CREATE TABLE case_members (
     role VARCHAR(32) DEFAULT 'member' NOT NULL, -- 'coordinator' | 'editor' | 'viewer'
     relationship VARCHAR(64) NULL,
     contact_number VARCHAR(32) NULL,
-    permissions_summary VARCHAR(255) NULL,
+    can_view_all_documents BOOLEAN DEFAULT FALSE NOT NULL,
+    can_upload_documents BOOLEAN DEFAULT TRUE NOT NULL,
+    can_manage_tasks BOOLEAN DEFAULT TRUE NOT NULL,
+    can_approve_reports BOOLEAN DEFAULT FALSE NOT NULL,
+    can_view_medical BOOLEAN DEFAULT FALSE NOT NULL,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP NOT NULL,
     PRIMARY KEY (case_id, user_id)
 );
 CREATE INDEX ix_case_members_user ON case_members(user_id);
 ```
 
-#### 14. `case_vehicles`
-Multi-vehicle tracking: captures user vehicle and third-party involved vehicles.
+#### 16. `case_vehicles`
+Normalized multi-vehicle collision support.
 ```sql
 CREATE TABLE case_vehicles (
     id VARCHAR(64) PRIMARY KEY,
@@ -363,8 +443,8 @@ CREATE TABLE case_vehicles (
 CREATE INDEX ix_case_vehicles_case ON case_vehicles(case_id);
 ```
 
-#### 15. `case_involved_people`
-Multi-victim and witness tracking: associates individuals with vehicles, triage status, and care.
+#### 17. `case_involved_people`
+Normalized tracking for drivers, passengers, pedestrians, and witnesses.
 ```sql
 CREATE TABLE case_involved_people (
     id VARCHAR(64) PRIMARY KEY,
@@ -382,8 +462,8 @@ CREATE TABLE case_involved_people (
 CREATE INDEX ix_case_people_case ON case_involved_people(case_id);
 ```
 
-#### 16. `case_evidence`
-Photographic, video, and audio records collected from the scene with geographic telemetry.
+#### 18. `case_evidence`
+Incident scene evidence stored in private object storage with geographic coordinates.
 ```sql
 CREATE TABLE case_evidence (
     id VARCHAR(64) PRIMARY KEY,
@@ -403,8 +483,8 @@ CREATE TABLE case_evidence (
 CREATE INDEX ix_case_evidence_case ON case_evidence(case_id);
 ```
 
-#### 17. `tasks`
-Actionable checklist items with deadlines, assigned family members, and statutory timers.
+#### 19. `tasks`
+Actionable milestones with statutory timer triggers.
 ```sql
 CREATE TABLE tasks (
     id VARCHAR(64) PRIMARY KEY,
@@ -424,8 +504,8 @@ CREATE INDEX ix_tasks_case_status ON tasks(case_id, status);
 CREATE INDEX ix_tasks_assignee ON tasks(assignee_id);
 ```
 
-#### 18. `timeline_events`
-Chronological activity timeline displaying hospital admission, police draft, and insurer intimations.
+#### 20. `timeline_events`
+Chronological incident activity stream.
 ```sql
 CREATE TABLE timeline_events (
     id BIGSERIAL PRIMARY KEY,
@@ -441,10 +521,10 @@ CREATE INDEX ix_timeline_case_at ON timeline_events(case_id, at);
 
 ---
 
-### Domain 4: Reports, Claims & External Submissions
+### Domain 4: Reports, Claims & Statutory Submissions
 
-#### 19. `reports`
-Generated formal dossier packages (PDFs) with human-in-the-loop approval workflow.
+#### 21. `reports`
+Formal PDF dossiers with mandatory human coordinator approval before finalization.
 ```sql
 CREATE TABLE reports (
     id VARCHAR(64) PRIMARY KEY,
@@ -462,8 +542,8 @@ CREATE TABLE reports (
 CREATE INDEX ix_reports_case_status ON reports(case_id, status);
 ```
 
-#### 20. `report_versions`
-Immutable file versions of generated reports stored in object storage.
+#### 22. `report_versions`
+Cryptographically verified PDF revisions archived in private object storage.
 ```sql
 CREATE TABLE report_versions (
     id VARCHAR(64) PRIMARY KEY,
@@ -480,8 +560,8 @@ CREATE TABLE report_versions (
 CREATE INDEX ix_report_versions_report ON report_versions(report_id);
 ```
 
-#### 21. `insurance_claims`
-Insurance claim tracking covering own damage, third-party liability, and surveyor inspections.
+#### 23. `insurance_claims`
+Insurance claim tracking covering own-damage, personal accident, and third-party liabilities.
 ```sql
 CREATE TABLE insurance_claims (
     id VARCHAR(64) PRIMARY KEY,
@@ -503,8 +583,8 @@ CREATE TABLE insurance_claims (
 CREATE INDEX ix_claims_case ON insurance_claims(case_id);
 ```
 
-#### 22. `external_submissions`
-Outbound integration tracking for statutory portals (PM-RAHAT, Traffic Police, Insurer Desk).
+#### 24. `external_submissions`
+Outbound filings to statutory authorities, kept strictly distinct from internal report approval.
 ```sql
 CREATE TABLE external_submissions (
     id VARCHAR(64) PRIMARY KEY,
@@ -526,8 +606,8 @@ CREATE INDEX ix_ext_sub_case_status ON external_submissions(case_id, status);
 
 ### Domain 5: AI Assistance, Governance & Audit Trail
 
-#### 23. `conversations`
-Ask Second Hour AI interactive session sessions linked to users and optional case contexts.
+#### 25. `conversations`
+Ask Second Hour AI chat threads linked to users and optional case contexts.
 ```sql
 CREATE TABLE conversations (
     id VARCHAR(64) PRIMARY KEY,
@@ -542,8 +622,8 @@ CREATE TABLE conversations (
 CREATE INDEX ix_conversations_user ON conversations(user_id, updated_at DESC);
 ```
 
-#### 24. `conversation_messages`
-Turn-by-turn chat messages with structured citations, action proposals, and followups.
+#### 26. `conversation_messages`
+Chat messages with structured citations, action proposals, and followups.
 ```sql
 CREATE TABLE conversation_messages (
     id VARCHAR(64) PRIMARY KEY,
@@ -558,7 +638,7 @@ CREATE TABLE conversation_messages (
 CREATE INDEX ix_conv_msg_conv_time ON conversation_messages(conversation_id, created_at);
 ```
 
-#### 25. `ai_action_logs`
+#### 27. `ai_action_logs`
 Supervised AI tool execution tracking with explicit human-in-the-loop approval verification.
 ```sql
 CREATE TABLE ai_action_logs (
@@ -580,8 +660,8 @@ CREATE TABLE ai_action_logs (
 CREATE INDEX ix_ai_action_case_status ON ai_action_logs(case_id, approval_status);
 ```
 
-#### 26. `user_privacy_preferences`
-Data access boundaries defining whether AI and external services may inspect sensitive records.
+#### 28. `user_privacy_preferences`
+Data access boundary switches governing AI data inclusion.
 ```sql
 CREATE TABLE user_privacy_preferences (
     id VARCHAR(64) PRIMARY KEY,
@@ -598,8 +678,8 @@ CREATE TABLE user_privacy_preferences (
 CREATE INDEX ix_privacy_pref_user ON user_privacy_preferences(user_id);
 ```
 
-#### 27. `user_notification_preferences`
-Multi-channel delivery preferences across SMS, WhatsApp, Email, and Push alerts.
+#### 29. `user_notification_preferences`
+Multi-channel delivery preferences across SMS, WhatsApp, Email, and Push notifications.
 ```sql
 CREATE TABLE user_notification_preferences (
     id VARCHAR(64) PRIMARY KEY,
@@ -619,8 +699,8 @@ CREATE TABLE user_notification_preferences (
 CREATE INDEX ix_notif_pref_user ON user_notification_preferences(user_id);
 ```
 
-#### 28. `consent_records`
-Immutable audit log recording user consent grants and revocations for legal and regulatory compliance.
+#### 30. `consent_records`
+Immutable legal consent logs for data processing, emergency dispatch, and PM-RAHAT intake.
 ```sql
 CREATE TABLE consent_records (
     id VARCHAR(64) PRIMARY KEY,
@@ -634,8 +714,8 @@ CREATE TABLE consent_records (
 CREATE INDEX ix_consent_user_type ON consent_records(user_id, consent_type);
 ```
 
-#### 29. `audit_log`
-Comprehensive immutable system-wide security, mutation, and MCP tool execution log.
+#### 31. `audit_log`
+Strictly append-only system-wide security, mutation, and MCP tool execution log.
 ```sql
 CREATE TABLE audit_log (
     id BIGSERIAL PRIMARY KEY,
@@ -644,7 +724,7 @@ CREATE TABLE audit_log (
     action_type VARCHAR(64) NOT NULL,
     entity_type VARCHAR(64) NOT NULL,
     entity_id VARCHAR(64) NULL,
-    payload_json JSONB DEFAULT '{}'::jsonb NOT NULL,
+    payload_json JSONB DEFAULT '{}'::jsonb NOT NULL, -- Strictly redacted of credentials and raw tokens
     result_summary TEXT NOT NULL,
     approval_state VARCHAR(64) DEFAULT 'standard' NOT NULL,
     at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP NOT NULL
