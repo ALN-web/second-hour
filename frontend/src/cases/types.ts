@@ -242,4 +242,76 @@ export interface CaseWorkspaceData {
   alerts: WatcherAlertItem[]
   clock_now: string
   demo_clock_offset_hours: number
+  case_vehicles?: CaseVehicleItem[]
+  involved_people?: InvolvedPersonItem[]
+  evidence_items?: CaseEvidenceItem[]
+  status_transitions?: CaseStatusTransitionItem[]
+}
+
+export interface CaseVehicleItem {
+  id: string
+  case_id: string
+  vehicle_id?: string
+  registration_number: string
+  vehicle_involvement_type: string
+  damage_description?: string
+  damage_severity: string
+  make_model?: string
+  color?: string
+  driver_name?: string
+  driver_contact?: string
+  insurance_company?: string
+  insurance_policy_no?: string
+  is_third_party: boolean
+  created_at: string
+}
+
+export interface InvolvedPersonItem {
+  id: string
+  case_id: string
+  case_vehicle_id?: string
+  associated_user_id?: string
+  full_name: string
+  involvement_type: string
+  relationship_to_coordinator?: string
+  contact_number?: string
+  reported_injury_status: string
+  injury_description?: string
+  hospital_name?: string
+  treatment_summary?: string
+  notes?: string
+  created_at: string
+}
+
+export interface CaseStatusTransitionItem {
+  id: string
+  case_id: string
+  from_status: string
+  to_status: string
+  changed_by: string
+  transition_trigger: string
+  reason?: string
+  created_at: string
+}
+
+export interface CaseEvidenceItem {
+  id: string
+  case_id: string
+  uploaded_by: string
+  evidence_category: string
+  title: string
+  description?: string
+  original_filename: string
+  mime_type: string
+  file_size_bytes: number
+  sha256?: string
+  evidence_source: string
+  associated_case_vehicle_id?: string
+  associated_person_id?: string
+  verification_status: string
+  capture_timestamp?: string
+  geo_latitude?: number
+  geo_longitude?: number
+  created_at: string
+  download_url: string
 }

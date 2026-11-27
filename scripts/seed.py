@@ -20,7 +20,11 @@ from app import config  # noqa: E402
 from app.db import (  # noqa: E402
     Base,
     Case,
+    CaseEvidence,
+    CaseInvolvedPerson,
     CaseMember,
+    CaseStatusTransition,
+    CaseVehicle,
     CentralDocument,
     DocumentAccessLog,
     DocumentVersion,
@@ -401,9 +405,42 @@ def seed() -> dict:
     )
     db.add(notif)
     db.flush()
+
+    # Seed demo vehicle for Priya
+    veh = Vehicle(
+        id="veh_demo_honda",
+        user_id="u_priya",
+        registration_number="KA-01-MJ-2024",
+        category="Four Wheeler",
+        manufacturer="Honda",
+        model="City",
+        variant="ZX CVT",
+        manufacturing_year=2024,
+        fuel_type="Petrol",
+        color="Platinum White Pearl",
+        chassis_number="MAKGM2657HM019284",
+        engine_number="L15Z19827364",
+        vin="MAKGM2657HM019284",
+        engine_capacity="1498 cc",
+        transmission="Automatic (CVT)",
+        owner_name="Priya Sharma",
+        ownership_type="Individual",
+        relationship_to_user="Self",
+        main_image="/api/vehicles/veh_demo_honda/photos/vpho_demo_1/file",
+        is_primary=True,
+        is_active=True,
+        registration_date=incident_utc - timedelta(days=365 * 2),
+    )
+    db.add(veh)
+    db.flush()
+
     case = Case(
         id="case_demo",
         case_number="SH-2026-0001",
+        title="Two-Vehicle Collision — Outer Ring Road",
+        owner_id="u_priya",
+        primary_vehicle_id="veh_demo_honda",
+        is_active=True,
         status="active",
         incident_at=incident_utc,
         approximate_location="Outer Ring Road near Agara Flyover, Bengaluru",
@@ -456,34 +493,6 @@ def seed() -> dict:
         created_by="u_priya",
     )
     db.add(case)
-    db.flush()
-
-    # Seed demo vehicle for Priya
-    veh = Vehicle(
-        id="veh_demo_honda",
-        user_id="u_priya",
-        registration_number="KA-01-MJ-2024",
-        category="Four Wheeler",
-        manufacturer="Honda",
-        model="City",
-        variant="ZX CVT",
-        manufacturing_year=2024,
-        fuel_type="Petrol",
-        color="Platinum White Pearl",
-        chassis_number="MAKGM2657HM019284",
-        engine_number="L15Z19827364",
-        vin="MAKGM2657HM019284",
-        engine_capacity="1498 cc",
-        transmission="Automatic (CVT)",
-        owner_name="Priya Sharma",
-        ownership_type="Individual",
-        relationship_to_user="Self",
-        main_image="/api/vehicles/veh_demo_honda/photos/vpho_demo_1/file",
-        is_primary=True,
-        is_active=True,
-        registration_date=incident_utc - timedelta(days=365 * 2),
-    )
-    db.add(veh)
     db.flush()
 
     # Seed insurance policy expiring in 28 days
@@ -736,22 +745,168 @@ def seed() -> dict:
         is_primary=True,
     )
     db.add(photo)
+
+    # Seed Phase 3 Status Transitions
+    cst1 = CaseStatusTransition(
+        id="cst_demo_1",
+        case_id=case.id,
+        from_status="none",
+        to_status="active",
+        changed_by="u_priya",
+        transition_trigger="case_creation",
+        reason="Accident emergency intimation created",
+        created_at=incident_utc,
+    )
+    db.add(cst1)
+
+    # Seed Phase 3 Case Vehicles
+    cv_honda = CaseVehicle(
+        id="cv_demo_honda",
+        case_id=case.id,
+        vehicle_id="veh_demo_honda",
+        user_id="u_priya",
+        registration_number="KA-01-MJ-2024",
+        vehicle_involvement_type="primary_subject",
+        make_model="Honda City ZX CVT",
+        color="Platinum White Pearl",
+        driver_name="Ravi Kumar",
+        driver_contact="+91 98450 88291",
+        insurance_company="Tata AIG General Insurance",
+        insurance_policy_no="POL-99283401-2026",
+        damage_severity="Moderate Frontal Damage",
+        damage_description="Front bumper dislodged, left headlamp unit broken, left front fender dented",
+        is_third_party=False,
+        created_at=incident_utc,
+    )
+    cv_lorry = CaseVehicle(
+        id="cv_demo_lorry",
+        case_id=case.id,
+        vehicle_id=None,
+        user_id=None,
+        registration_number="KA-51-B-9182",
+        vehicle_involvement_type="third_party",
+        make_model="Tata 407 Commercial Vehicle",
+        color="Yellow / Brown",
+        driver_name="Manjunath Gowda",
+        driver_contact="+91 94480 33211",
+        insurance_company="National Insurance Co",
+        insurance_policy_no="NIC-7782190-2026",
+        damage_severity="Minor Right Quarter Scrape",
+        damage_description="Right side bumper paint scrapings",
+        is_third_party=True,
+        created_at=incident_utc,
+    )
+    db.add_all([cv_honda, cv_lorry])
+    db.flush()
+
+    # Seed Phase 3 Involved People
+    cip_ravi = CaseInvolvedPerson(
+        id="cip_demo_ravi",
+        case_id=case.id,
+        case_vehicle_id="cv_demo_honda",
+        associated_user_id=None,
+        full_name="Ravi Kumar",
+        involvement_type="driver",
+        relationship_to_coordinator="Spouse",
+        contact_number="+91 98450 88291",
+        reported_injury_status="moderate",
+        injury_description="Closed fracture of left radius; superficial forehead contusion",
+        hospital_name="Sample City Hospital",
+        treatment_summary="Closed reduction, immobilization with cast, conscious and oriented",
+        created_at=incident_utc,
+    )
+    cip_manjunath = CaseInvolvedPerson(
+        id="cip_demo_manjunath",
+        case_id=case.id,
+        case_vehicle_id="cv_demo_lorry",
+        associated_user_id=None,
+        full_name="Manjunath Gowda",
+        involvement_type="driver",
+        relationship_to_coordinator="Third-Party Driver",
+        contact_number="+91 94480 33211",
+        reported_injury_status="uninjured",
+        injury_description="Uninjured",
+        notes="Third-party vehicle driver",
+        created_at=incident_utc,
+    )
+    db.add_all([cip_ravi, cip_manjunath])
+    db.flush()
+
+    # Seed Phase 3 Case Evidence
+    ce_scene = CaseEvidence(
+        id="ce_demo_scene_1",
+        case_id=case.id,
+        uploaded_by="u_priya",
+        evidence_category="scene_photo",
+        title="Accident Location Intersection Overview",
+        description="Scene photograph showing vehicle positions on outer lane of Ring Road",
+        storage_key="evidence/case_demo/scene_intersection_1.jpg",
+        original_filename="scene_intersection_1.jpg",
+        mime_type="image/jpeg",
+        file_size_bytes=245000,
+        sha256="a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef0",
+        evidence_source="user_upload",
+        associated_case_vehicle_id="cv_demo_honda",
+        verification_status="verified",
+        capture_timestamp=incident_utc,
+        created_at=incident_utc + timedelta(minutes=15),
+    )
+    ce_damage = CaseEvidence(
+        id="ce_demo_damage_1",
+        case_id=case.id,
+        uploaded_by="u_priya",
+        evidence_category="vehicle_damage",
+        title="Honda City Front-Left Bumper & Headlamp Damage",
+        description="Close-up photograph of broken headlight lens and deformed front bumper",
+        storage_key="evidence/case_demo/honda_city_damage_left.jpg",
+        original_filename="honda_city_damage_left.jpg",
+        mime_type="image/jpeg",
+        file_size_bytes=312000,
+        sha256="b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef01",
+        evidence_source="user_upload",
+        associated_case_vehicle_id="cv_demo_honda",
+        verification_status="verified",
+        capture_timestamp=incident_utc,
+        created_at=incident_utc + timedelta(minutes=18),
+    )
+    db.add_all([ce_scene, ce_damage])
+
     db.add_all([
         CaseMember(
+            id="cm_demo_priya",
             case_id=case.id,
             user_id="u_priya",
+            member_name="Priya Sharma",
+            member_phone="+91 98450 12345",
             role="coordinator",
             relationship="Spouse",
             contact_number="+91 98450 12345",
             permissions_summary="Full Case Access, Financial Approvals",
+            invitation_status="active",
+            can_view_case=True,
+            can_upload_evidence=True,
+            can_view_documents=True,
+            can_manage_tasks=True,
+            can_approve_reports=True,
+            can_view_medical=True,
         ),
         CaseMember(
+            id="cm_demo_arjun",
             case_id=case.id,
             user_id="u_arjun",
+            member_name="Arjun Sharma",
+            member_phone="+91 98450 67890",
             role="member",
             relationship="Brother",
             contact_number="+91 98450 67890",
             permissions_summary="View Case, Coordinate Tasks & Garage",
+            invitation_status="active",
+            can_view_case=True,
+            can_upload_evidence=True,
+            can_view_documents=True,
+            can_manage_tasks=True,
+            can_approve_reports=False,
+            can_view_medical=False,
         ),
         # Seed case tasks
         Task(

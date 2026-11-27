@@ -59,8 +59,27 @@ def is_member(db: Session, user_id: str, case_id: str) -> bool:
     return db.get(CaseMember, (case_id, user_id)) is not None
 
 
-def add_event(db: Session, case_id: str, actor_id: str | None, kind: str, summary: str) -> None:
-    db.add(TimelineEvent(case_id=case_id, actor_id=actor_id, kind=kind, summary=summary))
+def add_event(
+    db: Session,
+    case_id: str,
+    actor_id: str | None,
+    kind: str,
+    summary: str,
+    title: str | None = None,
+    related_entity_type: str | None = None,
+    related_entity_id: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    db.add(TimelineEvent(
+        case_id=case_id,
+        actor_id=actor_id,
+        kind=kind,
+        title=title or kind.replace("_", " ").title(),
+        summary=summary,
+        related_entity_type=related_entity_type,
+        related_entity_id=related_entity_id,
+        metadata_json=metadata if metadata is not None else {},
+    ))
 
 
 def case_now(case: Case, now: datetime | None = None) -> datetime:

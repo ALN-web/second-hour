@@ -373,6 +373,188 @@ export function OverviewTab({
               </div>
             </div>
           </div>
+
+          {/* Phase 3: All Involved Vehicles (Multi-Vehicle & Third-Party Support) */}
+          {workspace.case_vehicles && workspace.case_vehicles.length > 0 && (
+            <div className="card p-6 bg-white border border-slate-200 rounded-2xl shadow-sm space-y-4">
+              <h3 className="text-base font-bold text-navy-950 flex items-center justify-between border-b border-slate-100 pb-3">
+                <span className="flex items-center gap-2">
+                  <span>🚗</span>
+                  <span>Involved Vehicles ({workspace.case_vehicles.length})</span>
+                </span>
+                <span className="text-xs font-semibold text-slate-500">
+                  Normalized Multi-Vehicle Record
+                </span>
+              </h3>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {workspace.case_vehicles.map((cv) => (
+                  <div
+                    key={cv.id}
+                    className={`p-4 rounded-xl border ${
+                      cv.is_third_party
+                        ? 'border-amber-200 bg-amber-50/20'
+                        : 'border-slate-200 bg-slate-50/50'
+                    } space-y-2 text-xs`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono font-bold text-sm text-navy-950">
+                        {cv.registration_number}
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                          cv.is_third_party
+                            ? 'bg-amber-100 text-amber-900 border border-amber-200'
+                            : 'bg-blue-100 text-blue-900 border border-blue-200'
+                        }`}
+                      >
+                        {cv.is_third_party ? 'Third-Party Vehicle' : 'Primary Subject'}
+                      </span>
+                    </div>
+
+                    <div className="text-slate-800 font-semibold">
+                      {cv.make_model || 'Vehicle Details'} {cv.color ? `· ${cv.color}` : ''}
+                    </div>
+
+                    <div className="space-y-1 text-slate-600 pt-1 border-t border-slate-100">
+                      {cv.driver_name && (
+                        <div>
+                          <span className="text-slate-400">Driver: </span>
+                          <span className="font-medium text-navy-900">{cv.driver_name}</span>
+                          {cv.driver_contact ? ` (${cv.driver_contact})` : ''}
+                        </div>
+                      )}
+                      {cv.insurance_company && (
+                        <div>
+                          <span className="text-slate-400">Insurer: </span>
+                          <span className="font-medium">{cv.insurance_company}</span>
+                          {cv.insurance_policy_no ? ` · #${cv.insurance_policy_no}` : ''}
+                        </div>
+                      )}
+                      {cv.damage_description && (
+                        <div className="mt-1 text-slate-700 bg-white/70 p-2 rounded border border-slate-100">
+                          <span className="font-medium text-slate-500">Damage: </span>
+                          {cv.damage_description} ({cv.damage_severity})
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Phase 3: Involved People (Drivers, Passengers, Pedestrians) */}
+          {workspace.involved_people && workspace.involved_people.length > 0 && (
+            <div className="card p-6 bg-white border border-slate-200 rounded-2xl shadow-sm space-y-4">
+              <h3 className="text-base font-bold text-navy-950 flex items-center justify-between border-b border-slate-100 pb-3">
+                <span className="flex items-center gap-2">
+                  <span>👥</span>
+                  <span>Involved Persons ({workspace.involved_people.length})</span>
+                </span>
+                <span className="text-xs text-slate-400">
+                  User-Reported Status (Non-Diagnostic)
+                </span>
+              </h3>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {workspace.involved_people.map((person) => (
+                  <div
+                    key={person.id}
+                    className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-2 text-xs"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-sm text-navy-950">
+                        {person.full_name}
+                      </span>
+                      <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-200 text-slate-800 capitalize">
+                        {person.involvement_type}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 text-slate-600">
+                      <span>Relationship: {person.relationship_to_coordinator || 'Involved Party'}</span>
+                      {person.contact_number && (
+                        <>
+                          <span>·</span>
+                          <span className="font-mono">{person.contact_number}</span>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-100 space-y-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-slate-400">Reported Injury:</span>
+                        <span
+                          className={`font-semibold capitalize ${
+                            person.reported_injury_status === 'uninjured'
+                              ? 'text-emerald-700'
+                              : 'text-orange-700'
+                          }`}
+                        >
+                          {person.reported_injury_status}
+                        </span>
+                      </div>
+                      {person.injury_description && (
+                        <p className="text-slate-600">{person.injury_description}</p>
+                      )}
+                      {person.hospital_name && (
+                        <p className="text-slate-500 text-[11px]">
+                          🏥 Hospital: {person.hospital_name}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Phase 3: Case Status Transition History */}
+          {workspace.status_transitions && workspace.status_transitions.length > 0 && (
+            <div className="card p-6 bg-white border border-slate-200 rounded-2xl shadow-sm space-y-3">
+              <h3 className="text-base font-bold text-navy-950 flex items-center justify-between border-b border-slate-100 pb-3">
+                <span className="flex items-center gap-2">
+                  <span>📜</span>
+                  <span>Case Status Audit History</span>
+                </span>
+                <span className="text-xs font-semibold text-slate-500">
+                  Append-Only State Machine
+                </span>
+              </h3>
+
+              <div className="space-y-2">
+                {workspace.status_transitions.map((st) => (
+                  <div
+                    key={st.id}
+                    className="p-3 bg-slate-50 rounded-xl border border-slate-100 flex items-center justify-between text-xs"
+                  >
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-navy-950 capitalize">
+                          {st.from_status} → {st.to_status}
+                        </span>
+                        <span className="text-[11px] bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">
+                          {st.transition_trigger}
+                        </span>
+                      </div>
+                      {st.reason && (
+                        <p className="text-slate-600 text-[11px] mt-0.5">{st.reason}</p>
+                      )}
+                    </div>
+                    <span className="text-slate-400 font-mono text-[11px]">
+                      {new Date(st.created_at).toLocaleString('en-IN', {
+                        day: 'numeric',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right 1 Col: Linked Vehicle Profile Card */}

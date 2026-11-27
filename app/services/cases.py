@@ -1,8 +1,10 @@
 """Case, task, timeline, checklist and alert (watcher) services."""
 from __future__ import annotations
 
+import hashlib
 import math
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -10,7 +12,11 @@ from sqlalchemy.orm import Session
 from app import config
 from app.db import (
     Case,
+    CaseEvidence,
+    CaseInvolvedPerson,
     CaseMember,
+    CaseStatusTransition,
+    CaseVehicle,
     CentralDocument,
     Document,
     ExtractedField,
@@ -24,6 +30,7 @@ from app.db import (
     utcnow,
 )
 from app.services.common import (
+    PermissionDenied,
     ServiceError,
     add_event,
     case_now,
@@ -32,6 +39,7 @@ from app.services.common import (
     require_member,
     require_user,
 )
+from app.storage import get_storage
 
 POLICE_STATUSES = ("not_started", "requested_by_hospital", "confirmed", "not_confirmed")
 PRIORITIES = ("low", "medium", "high")
@@ -57,8 +65,10 @@ def create_case(db: Session, actor_id: str, incident_at: str, approximate_locati
                 victim_display_name: str | None = None, hospital_name: str | None = None,
                 life_threatening: bool = False, vehicle_id: str | None = None,
                 accident_type: str | None = None, injury_severity: str | None = None,
-                accident_description: str | None = None, damage_severity: str | None = None) -> dict:
-    require_user(db, actor_id)
+                accident_description: str | None = None, damage_severity: str | None = None,
+                title: str | None = None, latitude: float | None = None, longitude: float | None = None,
+                weather_conditions: str | None = None, police_station: str | None = None) -> dict:
+    actor = require_user(db, actor_id)
     inc = parse_dt(incident_at, "incident_at")
     if not inc:
         raise ServiceError("incident_at is required")
@@ -69,21 +79,30 @@ def create_case(db: Session, actor_id: str, incident_at: str, approximate_locati
     
     # Auto-link vehicle if valid
     veh = db.get(Vehicle, vehicle_id) if vehicle_id else None
+    case_title = (title or f"{accident_type or 'Accident'} — {approximate_location}").strip()[:200]
     
     case = Case(
         case_number=_next_case_number(db),
+        title=case_title,
+        owner_id=actor_id,
         incident_at=inc,
         approximate_location=approximate_location.strip()[:200],
+        latitude=latitude,
+        longitude=longitude,
         victim_display_name=(victim_display_name or "").strip()[:100] or None,
         hospital_name=(hospital_name or "").strip()[:200] or None,
+        police_station=(police_station or "").strip()[:150] or None,
+        weather_conditions=(weather_conditions or "Clear & Dry").strip()[:100],
         life_threatening=bool(life_threatening),
         vehicle_id=veh.id if veh else None,
+        primary_vehicle_id=veh.id if veh else None,
         accident_type=(accident_type or "Two-Vehicle Collision").strip()[:100],
         injury_severity=(injury_severity or "Moderate").strip()[:50],
         accident_description=(accident_description or "").strip()[:2000] or None,
         damage_severity=(damage_severity or "Moderate Frontal Damage").strip()[:100],
         created_by=actor_id,
         status="active",
+        is_active=True,
     )
     
     # If vehicle has insurance policy, auto-populate insurance provider/policy
@@ -99,16 +118,78 @@ def create_case(db: Session, actor_id: str, incident_at: str, approximate_locati
 
     db.add(case)
     db.flush()
-    db.add(CaseMember(case_id=case.id, user_id=actor_id, role="coordinator", relationship="Self", permissions_summary="Full Coordinator Access"))
-    add_event(db, case.id, actor_id, "case_created", f"Case {case.case_number} created")
+
+    # Initial Case Coordinator Member with full scopes
+    db.add(CaseMember(
+        case_id=case.id,
+        user_id=actor_id,
+        member_name=actor.name,
+        role="coordinator",
+        relationship="Self",
+        permissions_summary="Full Coordinator Access",
+        invitation_status="active",
+        can_view_case=True,
+        can_upload_evidence=True,
+        can_view_documents=True,
+        can_manage_tasks=True,
+        can_approve_reports=True,
+        can_view_medical=True,
+    ))
+
+    # Initial CaseStatusTransition
+    db.add(CaseStatusTransition(
+        case_id=case.id,
+        from_status="none",
+        to_status="active",
+        changed_by=actor_id,
+        transition_trigger="case_creation",
+        reason="Initial case registration",
+    ))
+
+    # Link registered vehicle in case_vehicles table
+    if veh:
+        db.add(CaseVehicle(
+            case_id=case.id,
+            vehicle_id=veh.id,
+            user_id=actor_id,
+            registration_number=veh.registration_number,
+            vehicle_involvement_type="primary_subject",
+            make_model=f"{veh.manufacturer} {veh.model}",
+            color=veh.color,
+            damage_description=damage_description,
+            damage_severity=damage_severity or "Moderate",
+            is_third_party=False,
+        ))
+
+    # If victim or driver name provided, add involved person
+    if victim_display_name:
+        db.add(CaseInvolvedPerson(
+            case_id=case.id,
+            full_name=victim_display_name.strip()[:120],
+            involvement_type="driver",
+            relationship_to_coordinator="Self" if victim_display_name == actor.name else "Family Member",
+            reported_injury_status=injury_severity or "moderate",
+            injury_description=case.injury_description,
+            hospital_name=case.hospital_name,
+        ))
+
+    add_event(db, case.id, actor_id, "case_created", f"Case {case.case_number} created", title="Case Created")
     db.commit()
-    return {"case_id": case.id, "case_number": case.case_number, "status": case.status}
+    return {
+        "case_id": case.id,
+        "case_number": case.case_number,
+        "case_reference_number": case.case_number,
+        "title": case.title,
+        "status": case.status,
+        "owner_id": case.owner_id,
+    }
 
 
 def list_cases_for(db: Session, user_id: str) -> list[dict]:
     rows = db.scalars(select(Case).join(CaseMember, CaseMember.case_id == Case.id)
-                      .where(CaseMember.user_id == user_id).order_by(Case.created_at.desc())).all()
-    return [{"case_id": c.id, "case_number": c.case_number, "victim_display_name": c.victim_display_name,
+                      .where(CaseMember.user_id == user_id, Case.deleted_at == None).order_by(Case.created_at.desc())).all()
+    return [{"case_id": c.id, "case_number": c.case_number, "case_reference_number": c.case_number,
+             "title": c.title or c.case_number, "victim_display_name": c.victim_display_name,
              "hospital_name": c.hospital_name, "status": c.status, "incident_at": iso(c.incident_at)} for c in rows]
 
 
@@ -124,7 +205,7 @@ def list_cases_overview(
     query = (
         select(Case)
         .join(CaseMember, CaseMember.case_id == Case.id)
-        .where(CaseMember.user_id == user_id)
+        .where(CaseMember.user_id == user_id, Case.deleted_at == None)
         .order_by(Case.created_at.desc())
     )
     all_cases = db.scalars(query).all()
@@ -468,11 +549,22 @@ def get_case_workspace(db: Session, actor_id: str, case_id: str) -> dict:
     # 9. Alerts and AI guidance
     alerts = get_case_alerts(db, actor_id, case_id)["alerts"]
 
+    # Phase 3: Case vehicles, involved people, evidence items, and status transitions
+    case_vehicles = list_case_vehicles(db, actor_id, case_id)
+    involved_people = list_involved_people(db, actor_id, case_id)
+    case_evidence_items = list_case_evidence(db, actor_id, case_id)
+    status_transitions = list_case_status_transitions(db, actor_id, case_id)
+
     return {
         "case": {
             "id": case.id,
             "case_number": case.case_number,
+            "case_reference_number": case.case_number,
+            "title": case.title or case.case_number,
             "status": case.status,
+            "owner_id": case.owner_id or case.created_by,
+            "is_active": case.is_active,
+            "closed_at": iso(case.closed_at) if case.closed_at else None,
             "incident_at": iso(case.incident_at),
             "accident_time": case.incident_at.strftime("%I:%M %p"),
             "approximate_location": case.approximate_location,
@@ -492,6 +584,7 @@ def get_case_workspace(db: Session, actor_id: str, case_id: str) -> dict:
             "damage_severity": case.damage_severity or "Moderate Frontal Damage",
             "damage_description": case.damage_description or "Front-left bumper deformed, headlight cracked, steering alignment impacted.",
             "vehicle_id": case.vehicle_id,
+            "primary_vehicle_id": case.primary_vehicle_id or case.vehicle_id,
             "created_by": case.created_by,
             "created_at": iso(case.created_at),
             "updated_at": iso(case.updated_at),
@@ -513,6 +606,10 @@ def get_case_workspace(db: Session, actor_id: str, case_id: str) -> dict:
         "alerts": alerts,
         "clock_now": iso(now),
         "demo_clock_offset_hours": case.demo_clock_offset_hours,
+        "case_vehicles": case_vehicles,
+        "involved_people": involved_people,
+        "evidence_items": case_evidence_items,
+        "status_transitions": status_transitions,
     }
 
 
@@ -898,12 +995,33 @@ def get_missing_documents(db: Session, actor_id: str, case_id: str) -> dict:
 # ---------------------------------------------------------------- tasks
 
 def _task_dict(t: Task) -> dict:
-    return {"task_id": t.id, "title": t.title, "description": t.description, "priority": t.priority,
-            "status": t.status, "due_at": iso(t.due_at), "due_source": t.due_source, "assignee_id": t.assignee_id}
+    return {
+        "task_id": t.id,
+        "title": t.title,
+        "description": t.description,
+        "category": getattr(t, "category", "general") or "general",
+        "priority": t.priority,
+        "status": t.status,
+        "due_at": iso(t.due_at),
+        "due_source": t.due_source,
+        "assignee_id": t.assignee_id,
+        "completed_at": iso(t.completed_at) if hasattr(t, "completed_at") and t.completed_at else None,
+        "created_at": iso(t.created_at) if hasattr(t, "created_at") and t.created_at else None,
+    }
 
 
-def create_task(db: Session, actor_id: str, case_id: str, title: str, description: str = "",
-                priority: str = "medium", due_at: str | None = None, due_source: str | None = None) -> dict:
+def create_task(
+    db: Session,
+    actor_id: str,
+    case_id: str,
+    title: str,
+    description: str = "",
+    priority: str = "medium",
+    due_at: str | None = None,
+    due_source: str | None = None,
+    category: str = "general",
+    assignee_id: str | None = None,
+) -> dict:
     require_member(db, actor_id, case_id)
     if not title or not title.strip():
         raise ServiceError("title is required")
@@ -912,11 +1030,32 @@ def create_task(db: Session, actor_id: str, case_id: str, title: str, descriptio
     due = parse_dt(due_at, "due_at")
     if due and not (due_source and due_source.strip()):
         raise ServiceError("A due date needs a due_source (user-confirmed or an official source). Leave due_at empty otherwise.")
-    t = Task(case_id=case_id, title=title.strip()[:200], description=(description or "")[:2000], priority=priority,
-             due_at=due, due_source=(due_source or None), created_by=actor_id)
+    if assignee_id:
+        require_member(db, assignee_id, case_id)
+
+    t = Task(
+        case_id=case_id,
+        title=title.strip()[:200],
+        description=(description or "")[:2000],
+        category=category[:64] if category else "general",
+        priority=priority,
+        due_at=due,
+        due_source=(due_source or None),
+        assignee_id=assignee_id,
+        created_by=actor_id,
+    )
     db.add(t)
     db.flush()
-    add_event(db, case_id, actor_id, "task_created", f"Task created: {t.title}")
+    add_event(
+        db,
+        case_id,
+        actor_id,
+        "task_created",
+        f"Task created: {t.title}",
+        title="Task Created",
+        related_entity_type="task",
+        related_entity_id=t.id,
+    )
     db.commit()
     return _task_dict(t)
 
@@ -929,7 +1068,16 @@ def assign_task(db: Session, actor_id: str, case_id: str, task_id: str, member_i
     require_member(db, member_id, case_id)  # assignee must also be a member
     t.assignee_id = member_id
     name = db.get(User, member_id).name
-    add_event(db, case_id, actor_id, "task_assigned", f"Task '{t.title}' assigned to {name}")
+    add_event(
+        db,
+        case_id,
+        actor_id,
+        "task_assigned",
+        f"Task '{t.title}' assigned to {name}",
+        title="Task Assigned",
+        related_entity_type="task",
+        related_entity_id=t.id,
+    )
     db.commit()
     return _task_dict(t)
 
@@ -942,10 +1090,24 @@ def list_tasks(db: Session, actor_id: str, case_id: str) -> list[dict]:
 def set_task_status(db: Session, actor_id: str, case_id: str, task_id: str, status: str) -> dict:
     require_member(db, actor_id, case_id)
     t = db.get(Task, task_id)
-    if not t or t.case_id != case_id or status not in ("open", "done"):
-        raise ServiceError("Invalid task or status")
+    allowed_statuses = ("open", "in_progress", "done", "completed", "cancelled")
+    if not t or t.case_id != case_id or status not in allowed_statuses:
+        raise ServiceError(f"Invalid task or status. Allowed: {allowed_statuses}")
     t.status = status
-    add_event(db, case_id, actor_id, "task_status", f"Task '{t.title}' marked {status}")
+    if status in ("done", "completed"):
+        t.completed_at = utcnow()
+    else:
+        t.completed_at = None
+    add_event(
+        db,
+        case_id,
+        actor_id,
+        "task_status",
+        f"Task '{t.title}' marked {status}",
+        title="Task Updated",
+        related_entity_type="task",
+        related_entity_id=t.id,
+    )
     db.commit()
     return _task_dict(t)
 
@@ -953,4 +1115,518 @@ def set_task_status(db: Session, actor_id: str, case_id: str, task_id: str, stat
 def timeline(db: Session, actor_id: str, case_id: str) -> list[dict]:
     require_member(db, actor_id, case_id)
     rows = db.scalars(select(TimelineEvent).where(TimelineEvent.case_id == case_id).order_by(TimelineEvent.at.desc())).all()
-    return [{"at": iso(e.at), "actor_id": e.actor_id, "kind": e.kind, "summary": e.summary} for e in rows]
+    return [
+        {
+            "id": e.id,
+            "at": iso(e.at),
+            "actor_id": e.actor_id,
+            "kind": e.kind,
+            "title": getattr(e, "title", None) or e.kind.replace("_", " ").title(),
+            "summary": e.summary,
+            "related_entity_type": getattr(e, "related_entity_type", None),
+            "related_entity_id": getattr(e, "related_entity_id", None),
+        }
+        for e in rows
+    ]
+
+
+# ---------------------------------------------------------------- Phase 3 Case Lifecycle & Status Transitions
+
+def update_case_status(
+    db: Session,
+    actor_id: str,
+    case_id: str,
+    new_status: str,
+    reason: str | None = None,
+    trigger: str = "manual_user_action",
+) -> dict:
+    case = require_member(db, actor_id, case_id)
+    allowed_statuses = ("active", "open", "under_review", "action_required", "submitted", "resolved", "closed", "archived")
+    if new_status not in allowed_statuses:
+        raise ServiceError(f"Invalid status '{new_status}'. Allowed: {allowed_statuses}")
+
+    old_status = case.status
+    if old_status == new_status:
+        return {"case_id": case.id, "status": case.status, "previous_status": old_status}
+
+    case.status = new_status
+    if new_status == "closed":
+        case.closed_at = utcnow()
+    elif new_status == "archived":
+        case.is_active = False
+
+    # Immutable append-only status transition
+    trans = CaseStatusTransition(
+        case_id=case.id,
+        from_status=old_status,
+        to_status=new_status,
+        changed_by=actor_id,
+        transition_trigger=trigger,
+        reason=reason or f"Status changed to {new_status}",
+    )
+    db.add(trans)
+    db.flush()
+
+    add_event(
+        db,
+        case_id=case.id,
+        actor_id=actor_id,
+        kind="case_status_changed",
+        title="Case Status Changed",
+        summary=f"Case status transitioned from '{old_status}' to '{new_status}': {reason or 'Status updated'}",
+        related_entity_type="case_status_transition",
+        related_entity_id=trans.id,
+    )
+    db.commit()
+    return {
+        "case_id": case.id,
+        "status": case.status,
+        "previous_status": old_status,
+        "transition_id": trans.id,
+        "reason": trans.reason,
+        "transitioned_at": iso(trans.created_at),
+    }
+
+
+def list_case_status_transitions(db: Session, actor_id: str, case_id: str) -> list[dict]:
+    require_member(db, actor_id, case_id)
+    transitions = db.scalars(
+        select(CaseStatusTransition)
+        .where(CaseStatusTransition.case_id == case_id)
+        .order_by(CaseStatusTransition.created_at.desc())
+    ).all()
+    return [
+        {
+            "id": t.id,
+            "case_id": t.case_id,
+            "from_status": t.from_status,
+            "to_status": t.to_status,
+            "changed_by": t.changed_by,
+            "transition_trigger": t.transition_trigger,
+            "reason": t.reason,
+            "created_at": iso(t.created_at),
+        }
+        for t in transitions
+    ]
+
+
+def close_case(db: Session, actor_id: str, case_id: str, reason: str = "Case closed by user") -> dict:
+    return update_case_status(db, actor_id, case_id, "closed", reason=reason)
+
+
+def archive_case(db: Session, actor_id: str, case_id: str, reason: str = "Case archived by user") -> dict:
+    case = require_member(db, actor_id, case_id)
+    case.is_active = False
+    return update_case_status(db, actor_id, case_id, "archived", reason=reason)
+
+
+def delete_case(db: Session, actor_id: str, case_id: str) -> dict:
+    case = require_member(db, actor_id, case_id)
+    if case.created_by != actor_id and case.owner_id != actor_id:
+        raise PermissionDenied("Only the case coordinator can delete or archive the case")
+    case.deleted_at = utcnow()
+    case.is_active = False
+    add_event(db, case_id, actor_id, "case_deleted", "Case soft-deleted", title="Case Deleted")
+    db.commit()
+    return {"case_id": case_id, "deleted": True}
+
+
+# ---------------------------------------------------------------- Phase 3 Case Vehicles
+
+def _case_vehicle_dict(cv: CaseVehicle) -> dict:
+    return {
+        "id": cv.id,
+        "case_id": cv.case_id,
+        "vehicle_id": cv.vehicle_id,
+        "registration_number": cv.registration_number,
+        "vehicle_involvement_type": cv.vehicle_involvement_type,
+        "damage_description": cv.damage_description,
+        "damage_severity": cv.damage_severity,
+        "make_model": cv.make_model,
+        "color": cv.color,
+        "driver_name": cv.driver_name,
+        "driver_contact": cv.driver_contact,
+        "insurance_company": cv.insurance_company,
+        "insurance_policy_no": cv.insurance_policy_no,
+        "is_third_party": cv.is_third_party,
+        "created_at": iso(cv.created_at),
+    }
+
+
+def add_case_vehicle(db: Session, actor_id: str, case_id: str, data: dict) -> dict:
+    require_member(db, actor_id, case_id)
+    vehicle_id = data.get("vehicle_id")
+    is_third_party = bool(data.get("is_third_party", False))
+    reg_no = data.get("registration_number")
+
+    if vehicle_id:
+        veh = db.get(Vehicle, vehicle_id)
+        if not veh:
+            raise ServiceError("Vehicle not found")
+        reg_no = veh.registration_number
+        make_model = f"{veh.manufacturer} {veh.model}"
+        color = veh.color
+    else:
+        if not reg_no or not str(reg_no).strip():
+            raise ServiceError("Registration number is required")
+        reg_no = str(reg_no).strip().upper()
+        make_model = data.get("make_model")
+        color = data.get("color")
+        is_third_party = True
+
+    cv = CaseVehicle(
+        case_id=case_id,
+        vehicle_id=vehicle_id,
+        user_id=actor_id if not is_third_party else None,
+        registration_number=reg_no,
+        vehicle_involvement_type=data.get("vehicle_involvement_type", "third_party" if is_third_party else "primary_subject"),
+        damage_description=data.get("damage_description"),
+        damage_severity=data.get("damage_severity", "Moderate"),
+        make_model=make_model,
+        color=color,
+        driver_name=data.get("driver_name"),
+        driver_contact=data.get("driver_contact"),
+        insurance_company=data.get("insurance_company"),
+        insurance_policy_no=data.get("insurance_policy_no"),
+        is_third_party=is_third_party,
+    )
+    db.add(cv)
+    db.flush()
+    add_event(
+        db,
+        case_id,
+        actor_id,
+        "vehicle_associated",
+        f"Vehicle {reg_no} associated with case ({'Third-Party' if is_third_party else 'Primary Registered'})",
+        title="Vehicle Associated",
+        related_entity_type="case_vehicle",
+        related_entity_id=cv.id,
+    )
+    db.commit()
+    return _case_vehicle_dict(cv)
+
+
+def list_case_vehicles(db: Session, actor_id: str, case_id: str) -> list[dict]:
+    require_member(db, actor_id, case_id)
+    rows = db.scalars(select(CaseVehicle).where(CaseVehicle.case_id == case_id).order_by(CaseVehicle.created_at)).all()
+    return [_case_vehicle_dict(cv) for cv in rows]
+
+
+def remove_case_vehicle(db: Session, actor_id: str, case_id: str, case_vehicle_id: str) -> dict:
+    require_member(db, actor_id, case_id)
+    cv = db.get(CaseVehicle, case_vehicle_id)
+    if not cv or cv.case_id != case_id:
+        raise ServiceError("Case vehicle not found")
+    reg = cv.registration_number
+    db.delete(cv)
+    add_event(db, case_id, actor_id, "vehicle_unlinked", f"Vehicle {reg} association removed from case", title="Vehicle Removed")
+    db.commit()
+    return {"removed": True, "case_vehicle_id": case_vehicle_id}
+
+
+# ---------------------------------------------------------------- Phase 3 Involved People
+
+def _involved_person_dict(p: CaseInvolvedPerson) -> dict:
+    return {
+        "id": p.id,
+        "case_id": p.case_id,
+        "case_vehicle_id": p.case_vehicle_id,
+        "associated_user_id": p.associated_user_id,
+        "full_name": p.full_name,
+        "involvement_type": p.involvement_type,
+        "relationship_to_coordinator": p.relationship_to_coordinator,
+        "contact_number": p.contact_number,
+        "reported_injury_status": p.reported_injury_status,
+        "injury_description": p.injury_description,
+        "hospital_name": p.hospital_name,
+        "treatment_summary": p.treatment_summary,
+        "notes": p.notes,
+        "created_at": iso(p.created_at),
+    }
+
+
+def add_involved_person(db: Session, actor_id: str, case_id: str, data: dict) -> dict:
+    require_member(db, actor_id, case_id)
+    name = data.get("full_name") or data.get("name")
+    if not name or not str(name).strip():
+        raise ServiceError("Full name is required for involved person")
+
+    cip = CaseInvolvedPerson(
+        case_id=case_id,
+        case_vehicle_id=data.get("case_vehicle_id"),
+        associated_user_id=data.get("associated_user_id"),
+        full_name=str(name).strip()[:120],
+        involvement_type=data.get("involvement_type", "driver"),
+        relationship_to_coordinator=data.get("relationship_to_coordinator"),
+        contact_number=data.get("contact_number"),
+        reported_injury_status=data.get("reported_injury_status", "uninjured"),
+        injury_description=data.get("injury_description"),
+        hospital_name=data.get("hospital_name"),
+        treatment_summary=data.get("treatment_summary"),
+        notes=data.get("notes"),
+    )
+    db.add(cip)
+    db.flush()
+    add_event(
+        db,
+        case_id,
+        actor_id,
+        "person_involved_added",
+        f"Involved person {cip.full_name} ({cip.involvement_type}) added to case",
+        title="Involved Person Added",
+        related_entity_type="case_involved_person",
+        related_entity_id=cip.id,
+    )
+    db.commit()
+    return _involved_person_dict(cip)
+
+
+def list_involved_people(db: Session, actor_id: str, case_id: str) -> list[dict]:
+    require_member(db, actor_id, case_id)
+    rows = db.scalars(select(CaseInvolvedPerson).where(CaseInvolvedPerson.case_id == case_id).order_by(CaseInvolvedPerson.created_at)).all()
+    return [_involved_person_dict(p) for p in rows]
+
+
+def update_involved_person(db: Session, actor_id: str, case_id: str, person_id: str, data: dict) -> dict:
+    require_member(db, actor_id, case_id)
+    p = db.get(CaseInvolvedPerson, person_id)
+    if not p or p.case_id != case_id:
+        raise ServiceError("Involved person not found")
+    if "full_name" in data:
+        p.full_name = str(data["full_name"]).strip()[:120]
+    if "involvement_type" in data:
+        p.involvement_type = str(data["involvement_type"]).strip()[:32]
+    if "reported_injury_status" in data:
+        p.reported_injury_status = str(data["reported_injury_status"]).strip()[:32]
+    if "injury_description" in data:
+        p.injury_description = str(data["injury_description"])
+    if "hospital_name" in data:
+        p.hospital_name = str(data["hospital_name"])
+    if "contact_number" in data:
+        p.contact_number = str(data["contact_number"])
+    if "notes" in data:
+        p.notes = str(data["notes"])
+    db.commit()
+    return _involved_person_dict(p)
+
+
+def remove_involved_person(db: Session, actor_id: str, case_id: str, person_id: str) -> dict:
+    require_member(db, actor_id, case_id)
+    p = db.get(CaseInvolvedPerson, person_id)
+    if not p or p.case_id != case_id:
+        raise ServiceError("Involved person not found")
+    name = p.full_name
+    db.delete(p)
+    add_event(db, case_id, actor_id, "person_removed", f"Involved person {name} removed from case", title="Involved Person Removed")
+    db.commit()
+    return {"removed": True, "person_id": person_id}
+
+
+# ---------------------------------------------------------------- Phase 3 Case Evidence
+
+def _evidence_dict(e: CaseEvidence) -> dict:
+    return {
+        "id": e.id,
+        "case_id": e.case_id,
+        "uploaded_by": e.uploaded_by,
+        "evidence_category": e.evidence_category,
+        "title": e.title,
+        "description": e.description,
+        "original_filename": e.original_filename,
+        "mime_type": e.mime_type,
+        "file_size_bytes": e.file_size_bytes,
+        "sha256": e.sha256,
+        "evidence_source": e.evidence_source,
+        "associated_case_vehicle_id": e.associated_case_vehicle_id,
+        "associated_person_id": e.associated_person_id,
+        "verification_status": e.verification_status,
+        "capture_timestamp": iso(e.capture_timestamp),
+        "geo_latitude": e.geo_latitude,
+        "geo_longitude": e.geo_longitude,
+        "created_at": iso(e.created_at),
+        "download_url": f"/api/cases/{e.case_id}/evidence/{e.id}/file",
+    }
+
+
+def upload_case_evidence(
+    db: Session,
+    actor_id: str,
+    case_id: str,
+    title: str,
+    file_name: str,
+    content: bytes,
+    mime_type: str,
+    evidence_category: str = "scene_photo",
+    description: str = "",
+    evidence_source: str = "user_upload",
+    associated_case_vehicle_id: str | None = None,
+    associated_person_id: str | None = None,
+    geo_latitude: float | None = None,
+    geo_longitude: float | None = None,
+    capture_timestamp: datetime | None = None,
+) -> dict:
+    require_member(db, actor_id, case_id)
+    if not title or not title.strip():
+        raise ServiceError("Evidence title is required")
+    if not content:
+        raise ServiceError("File content cannot be empty")
+
+    if len(content) > 50 * 1024 * 1024:
+        raise ServiceError("File exceeds maximum allowed size of 50MB")
+
+    sha256 = hashlib.sha256(content).hexdigest()
+    storage = get_storage()
+    storage_key = f"evidence/{case_id}/{sha256[:16]}_{file_name}"
+    storage.put_object(storage_key, content, mime_type=mime_type)
+
+    evidence = CaseEvidence(
+        case_id=case_id,
+        uploaded_by=actor_id,
+        evidence_category=evidence_category,
+        title=title.strip()[:200],
+        description=description.strip()[:2000] if description else None,
+        storage_key=storage_key,
+        original_filename=file_name[:255],
+        mime_type=mime_type[:100],
+        file_size_bytes=len(content),
+        sha256=sha256,
+        evidence_source=evidence_source,
+        associated_case_vehicle_id=associated_case_vehicle_id,
+        associated_person_id=associated_person_id,
+        verification_status="verified" if actor_id else "pending",
+        capture_timestamp=capture_timestamp,
+        geo_latitude=geo_latitude,
+        geo_longitude=geo_longitude,
+    )
+    db.add(evidence)
+    db.flush()
+
+    add_event(
+        db,
+        case_id,
+        actor_id,
+        "evidence_uploaded",
+        f"Evidence '{evidence.title}' ({evidence.evidence_category}) uploaded",
+        title="Evidence Uploaded",
+        related_entity_type="case_evidence",
+        related_entity_id=evidence.id,
+    )
+    db.commit()
+    return _evidence_dict(evidence)
+
+
+def list_case_evidence(db: Session, actor_id: str, case_id: str) -> list[dict]:
+    require_member(db, actor_id, case_id)
+    rows = db.scalars(select(CaseEvidence).where(CaseEvidence.case_id == case_id).order_by(CaseEvidence.created_at.desc())).all()
+    return [_evidence_dict(e) for e in rows]
+
+
+def get_case_evidence_file(db: Session, actor_id: str, case_id: str, evidence_id: str) -> tuple[Path, str, str]:
+    require_member(db, actor_id, case_id)
+    evidence = db.get(CaseEvidence, evidence_id)
+    if not evidence or evidence.case_id != case_id:
+        raise ServiceError("Evidence item not found")
+    storage = get_storage()
+    path = Path(storage.get_object_path(evidence.storage_key))
+    return path, evidence.mime_type, evidence.original_filename
+
+
+def delete_case_evidence(db: Session, actor_id: str, case_id: str, evidence_id: str) -> dict:
+    require_member(db, actor_id, case_id)
+    evidence = db.get(CaseEvidence, evidence_id)
+    if not evidence or evidence.case_id != case_id:
+        raise ServiceError("Evidence item not found")
+    title = evidence.title
+    db.delete(evidence)
+    add_event(db, case_id, actor_id, "evidence_deleted", f"Evidence '{title}' removed from case", title="Evidence Removed")
+    db.commit()
+    return {"deleted": True, "evidence_id": evidence_id}
+
+
+# ---------------------------------------------------------------- Phase 3 Member Permissions
+
+def _member_dict(db: Session, cm: CaseMember) -> dict:
+    user = db.get(User, cm.user_id) if cm.user_id else None
+    return {
+        "user_id": cm.user_id,
+        "name": cm.member_name or (user.name if user else "Collaborator"),
+        "email": cm.member_email,
+        "phone": cm.member_phone or cm.contact_number,
+        "role": cm.role,
+        "relationship": cm.relationship,
+        "invitation_status": cm.invitation_status,
+        "permissions_summary": cm.permissions_summary,
+        "can_view_case": cm.can_view_case,
+        "can_upload_evidence": cm.can_upload_evidence,
+        "can_view_documents": cm.can_view_documents,
+        "can_manage_tasks": cm.can_manage_tasks,
+        "can_approve_reports": cm.can_approve_reports,
+        "can_view_medical": cm.can_view_medical,
+        "created_at": iso(cm.created_at),
+    }
+
+
+def check_case_permission(db: Session, actor_id: str, case_id: str, permission_name: str) -> bool:
+    cm = db.get(CaseMember, (case_id, actor_id))
+    if not cm:
+        raise PermissionDenied(f"Actor '{actor_id}' is not a member of case '{case_id}'")
+    if cm.role == "coordinator":
+        return True
+    if cm.invitation_status != "active":
+        raise PermissionDenied("Member invitation is inactive or revoked")
+    allowed = getattr(cm, permission_name, False)
+    if not allowed:
+        raise PermissionDenied(f"Actor '{actor_id}' lacks permission '{permission_name}' on case '{case_id}'")
+    return True
+
+
+def update_case_member_permissions(
+    db: Session,
+    actor_id: str,
+    case_id: str,
+    member_id: str,
+    permissions: dict,
+) -> dict:
+    require_member(db, actor_id, case_id)
+    acting = db.get(CaseMember, (case_id, actor_id))
+    if not acting or acting.role != "coordinator":
+        raise PermissionDenied("Only the case coordinator can update member permissions")
+
+    target = db.get(CaseMember, (case_id, member_id))
+    if not target:
+        raise ServiceError("Target member not found in this case")
+
+    for perm in ("can_view_case", "can_upload_evidence", "can_view_documents", "can_manage_tasks", "can_approve_reports", "can_view_medical"):
+        if perm in permissions:
+            setattr(target, perm, bool(permissions[perm]))
+    if "role" in permissions:
+        target.role = str(permissions["role"])
+    if "invitation_status" in permissions:
+        target.invitation_status = str(permissions["invitation_status"])
+
+    db.commit()
+    return _member_dict(db, target)
+
+
+def remove_case_member(db: Session, actor_id: str, case_id: str, member_id: str) -> dict:
+    require_member(db, actor_id, case_id)
+    acting = db.get(CaseMember, (case_id, actor_id))
+    if not acting or acting.role != "coordinator":
+        raise PermissionDenied("Only the case coordinator can remove members")
+    if member_id == actor_id:
+        raise ServiceError("Case coordinator cannot remove themselves from the case")
+
+    target = db.get(CaseMember, (case_id, member_id))
+    if not target:
+        raise ServiceError("Member not found in this case")
+    db.delete(target)
+    add_event(db, case_id, actor_id, "member_removed", f"Member {member_id} removed from case", title="Member Removed")
+    db.commit()
+    return {"removed": True, "member_id": member_id}
+
+
+def list_case_members(db: Session, actor_id: str, case_id: str) -> list[dict]:
+    require_member(db, actor_id, case_id)
+    rows = db.scalars(select(CaseMember).where(CaseMember.case_id == case_id).order_by(CaseMember.created_at)).all()
+    return [_member_dict(db, cm) for cm in rows]
+

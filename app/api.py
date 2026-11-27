@@ -128,6 +128,7 @@ def cases_overview(
 class NewCase(BaseModel):
     incident_at: str
     approximate_location: str
+    title: str | None = None
     victim_display_name: str | None = None
     hospital_name: str | None = None
     life_threatening: bool = False
@@ -136,6 +137,10 @@ class NewCase(BaseModel):
     injury_severity: str | None = None
     accident_description: str | None = None
     damage_severity: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    weather_conditions: str | None = None
+    police_station: str | None = None
 
 
 @app.post("/api/cases")
@@ -166,6 +171,11 @@ async def new_case(body: NewCase, user: User = Depends(current_user), db=Depends
         body.injury_severity,
         body.accident_description,
         body.damage_severity,
+        title=body.title,
+        latitude=body.latitude,
+        longitude=body.longitude,
+        weather_conditions=body.weather_conditions,
+        police_station=body.police_station,
     )
 
 
@@ -239,35 +249,180 @@ def toggle_task(case_id: str, task_id: str, user: User = Depends(current_user), 
     return case_svc.toggle_task_status(db, user.id, case_id, task_id)
 
 
+class CaseStatusUpdate(BaseModel):
+    status: str
+    reason: str | None = None
+    trigger: str = "manual_user_action"
+
+
+@app.post("/api/cases/{case_id}/status")
+def update_case_status_endpoint(case_id: str, body: CaseStatusUpdate, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.update_case_status(db, user.id, case_id, body.status, body.reason, body.trigger)
+
+
+@app.get("/api/cases/{case_id}/transitions")
+def list_case_transitions_endpoint(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.list_case_status_transitions(db, user.id, case_id)
+
+
+@app.post("/api/cases/{case_id}/archive")
+def archive_case_endpoint(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.archive_case(db, user.id, case_id)
+
+
+@app.delete("/api/cases/{case_id}")
+def delete_case_endpoint(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.delete_case(db, user.id, case_id)
+
+
+class CaseVehicleCreate(BaseModel):
+    vehicle_id: str | None = None
+    registration_number: str | None = None
+    vehicle_involvement_type: str = "primary_subject"
+    damage_description: str | None = None
+    damage_severity: str = "Moderate"
+    make_model: str | None = None
+    color: str | None = None
+    driver_name: str | None = None
+    driver_contact: str | None = None
+    insurance_company: str | None = None
+    insurance_policy_no: str | None = None
+    is_third_party: bool = False
+
+
+@app.get("/api/cases/{case_id}/vehicles")
+def list_case_vehicles_endpoint(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.list_case_vehicles(db, user.id, case_id)
+
+
+@app.post("/api/cases/{case_id}/vehicles")
+def add_case_vehicle_endpoint(case_id: str, body: CaseVehicleCreate, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.add_case_vehicle(db, user.id, case_id, body.model_dump())
+
+
+@app.delete("/api/cases/{case_id}/vehicles/{case_vehicle_id}")
+def remove_case_vehicle_endpoint(case_id: str, case_vehicle_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.remove_case_vehicle(db, user.id, case_id, case_vehicle_id)
+
+
+class InvolvedPersonCreate(BaseModel):
+    full_name: str
+    involvement_type: str = "driver"
+    relationship_to_coordinator: str | None = None
+    contact_number: str | None = None
+    reported_injury_status: str = "uninjured"
+    injury_description: str | None = None
+    hospital_name: str | None = None
+    treatment_summary: str | None = None
+    notes: str | None = None
+    case_vehicle_id: str | None = None
+    associated_user_id: str | None = None
+
+
+@app.get("/api/cases/{case_id}/people")
+def list_involved_people_endpoint(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.list_involved_people(db, user.id, case_id)
+
+
+@app.post("/api/cases/{case_id}/people")
+def add_involved_person_endpoint(case_id: str, body: InvolvedPersonCreate, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.add_involved_person(db, user.id, case_id, body.model_dump())
+
+
+@app.patch("/api/cases/{case_id}/people/{person_id}")
+def update_involved_person_endpoint(case_id: str, person_id: str, body: dict, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.update_involved_person(db, user.id, case_id, person_id, body)
+
+
+@app.delete("/api/cases/{case_id}/people/{person_id}")
+def remove_involved_person_endpoint(case_id: str, person_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.remove_involved_person(db, user.id, case_id, person_id)
+
+
+@app.get("/api/cases/{case_id}/evidence")
+def list_case_evidence_endpoint(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.list_case_evidence(db, user.id, case_id)
+
+
 @app.post("/api/cases/{case_id}/evidence")
 async def upload_evidence(
     case_id: str,
     file: UploadFile = File(...),
+    title: str = Form(""),
     document_type: str = Form("accident_photo"),
-    category: str = Form("accident_case"),
+    category: str = Form("scene_photo"),
     notes: str = Form(""),
+    associated_case_vehicle_id: str | None = Form(None),
+    associated_person_id: str | None = Form(None),
     user: User = Depends(current_user),
     db=Depends(get_db),
 ):
     require_member(db, user.id, case_id)
     data = await file.read()
-    cdoc = central_docs_svc.save_central_document(
+    evidence_title = title.strip() or file.filename or "Incident Evidence"
+
+    # Store via Phase 2/3 StorageAdapter and CaseEvidence table
+    ev = case_svc.upload_case_evidence(
         db=db,
-        user_id=user.id,
+        actor_id=user.id,
+        case_id=case_id,
+        title=evidence_title,
         file_name=file.filename or "evidence.jpg",
-        file_data=data,
+        content=data,
         mime_type=file.content_type or "image/jpeg",
-        document_type=document_type,
-        category=category,
-        resource_type="ACCIDENT_CASE",
-        resource_id=case_id,
-        notes=notes,
+        evidence_category=category or "scene_photo",
+        description=notes,
+        associated_case_vehicle_id=associated_case_vehicle_id,
+        associated_person_id=associated_person_id,
     )
-    case_svc.add_event(db, case_id, user.id, "evidence_uploaded", f"Evidence uploaded: {cdoc.document_name}")
-    db.commit()
-    return {"ok": True, "id": cdoc.id, "document_name": cdoc.document_name}
+
+    # Cross-wallet sync with CentralDocument for unified document view
+    try:
+        central_docs_svc.save_central_document(
+            db=db,
+            user_id=user.id,
+            file_name=file.filename or "evidence.jpg",
+            file_data=data,
+            mime_type=file.content_type or "image/jpeg",
+            document_type=document_type,
+            category="accident_case",
+            resource_type="ACCIDENT_CASE",
+            resource_id=case_id,
+            notes=notes,
+        )
+    except Exception:
+        pass
+
+    return ev
 
 
+@app.get("/api/cases/{case_id}/evidence/{evidence_id}/file")
+def download_evidence_file(case_id: str, evidence_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    file_path, mime_type, filename = case_svc.get_case_evidence_file(db, user.id, case_id, evidence_id)
+    return FileResponse(file_path, media_type=mime_type, filename=filename)
+
+
+@app.delete("/api/cases/{case_id}/evidence/{evidence_id}")
+def delete_evidence_endpoint(case_id: str, evidence_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.delete_case_evidence(db, user.id, case_id, evidence_id)
+
+
+@app.get("/api/cases/{case_id}/members")
+def list_case_members_endpoint(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.list_case_members(db, user.id, case_id)
+
+
+@app.patch("/api/cases/{case_id}/members/{member_id}")
+def update_member_permissions_endpoint(case_id: str, member_id: str, body: dict, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.update_case_member_permissions(db, user.id, case_id, member_id, body)
+
+
+@app.delete("/api/cases/{case_id}/members/{member_id}")
+def remove_case_member_endpoint(case_id: str, member_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.remove_case_member(db, user.id, case_id, member_id)
+
+
+@app.post("/api/cases/{case_id}/summary")
 @app.get("/api/cases/{case_id}/summary")
 def summary(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
     return case_svc.get_case_summary(db, user.id, case_id)
