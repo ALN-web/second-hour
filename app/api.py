@@ -26,6 +26,9 @@ from app.services import documents as doc_svc
 from app.services import vehicles as veh_svc
 from app.services import assistant as asst_svc
 from app.services import profile as profile_svc
+from app.services import reports as report_svc
+from app.services import claims as claim_svc
+from app.services import submissions as sub_svc
 from app.services.common import PermissionDenied, ServiceError, iso, require_member
 
 app = FastAPI(title="Second Hour agent host")
@@ -61,6 +64,12 @@ def current_user(x_user_id: str = Header(default=""), db=Depends(get_db)) -> Use
     if not u:
         raise HTTPException(401, "Pick a demo user first")
     return u
+
+
+def current_user_optional(x_user_id: str = Header(default=""), db=Depends(get_db)) -> User | None:
+    if not x_user_id:
+        return None
+    return db.get(User, x_user_id)
 
 
 def mcp_error(payload: dict) -> HTTPException:
@@ -128,6 +137,7 @@ def cases_overview(
 class NewCase(BaseModel):
     incident_at: str
     approximate_location: str
+    title: str | None = None
     victim_display_name: str | None = None
     hospital_name: str | None = None
     life_threatening: bool = False
@@ -136,6 +146,10 @@ class NewCase(BaseModel):
     injury_severity: str | None = None
     accident_description: str | None = None
     damage_severity: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    weather_conditions: str | None = None
+    police_station: str | None = None
 
 
 @app.post("/api/cases")
@@ -166,6 +180,11 @@ async def new_case(body: NewCase, user: User = Depends(current_user), db=Depends
         body.injury_severity,
         body.accident_description,
         body.damage_severity,
+        title=body.title,
+        latitude=body.latitude,
+        longitude=body.longitude,
+        weather_conditions=body.weather_conditions,
+        police_station=body.police_station,
     )
 
 
@@ -239,35 +258,180 @@ def toggle_task(case_id: str, task_id: str, user: User = Depends(current_user), 
     return case_svc.toggle_task_status(db, user.id, case_id, task_id)
 
 
+class CaseStatusUpdate(BaseModel):
+    status: str
+    reason: str | None = None
+    trigger: str = "manual_user_action"
+
+
+@app.post("/api/cases/{case_id}/status")
+def update_case_status_endpoint(case_id: str, body: CaseStatusUpdate, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.update_case_status(db, user.id, case_id, body.status, body.reason, body.trigger)
+
+
+@app.get("/api/cases/{case_id}/transitions")
+def list_case_transitions_endpoint(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.list_case_status_transitions(db, user.id, case_id)
+
+
+@app.post("/api/cases/{case_id}/archive")
+def archive_case_endpoint(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.archive_case(db, user.id, case_id)
+
+
+@app.delete("/api/cases/{case_id}")
+def delete_case_endpoint(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.delete_case(db, user.id, case_id)
+
+
+class CaseVehicleCreate(BaseModel):
+    vehicle_id: str | None = None
+    registration_number: str | None = None
+    vehicle_involvement_type: str = "primary_subject"
+    damage_description: str | None = None
+    damage_severity: str = "Moderate"
+    make_model: str | None = None
+    color: str | None = None
+    driver_name: str | None = None
+    driver_contact: str | None = None
+    insurance_company: str | None = None
+    insurance_policy_no: str | None = None
+    is_third_party: bool = False
+
+
+@app.get("/api/cases/{case_id}/vehicles")
+def list_case_vehicles_endpoint(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.list_case_vehicles(db, user.id, case_id)
+
+
+@app.post("/api/cases/{case_id}/vehicles")
+def add_case_vehicle_endpoint(case_id: str, body: CaseVehicleCreate, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.add_case_vehicle(db, user.id, case_id, body.model_dump())
+
+
+@app.delete("/api/cases/{case_id}/vehicles/{case_vehicle_id}")
+def remove_case_vehicle_endpoint(case_id: str, case_vehicle_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.remove_case_vehicle(db, user.id, case_id, case_vehicle_id)
+
+
+class InvolvedPersonCreate(BaseModel):
+    full_name: str
+    involvement_type: str = "driver"
+    relationship_to_coordinator: str | None = None
+    contact_number: str | None = None
+    reported_injury_status: str = "uninjured"
+    injury_description: str | None = None
+    hospital_name: str | None = None
+    treatment_summary: str | None = None
+    notes: str | None = None
+    case_vehicle_id: str | None = None
+    associated_user_id: str | None = None
+
+
+@app.get("/api/cases/{case_id}/people")
+def list_involved_people_endpoint(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.list_involved_people(db, user.id, case_id)
+
+
+@app.post("/api/cases/{case_id}/people")
+def add_involved_person_endpoint(case_id: str, body: InvolvedPersonCreate, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.add_involved_person(db, user.id, case_id, body.model_dump())
+
+
+@app.patch("/api/cases/{case_id}/people/{person_id}")
+def update_involved_person_endpoint(case_id: str, person_id: str, body: dict, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.update_involved_person(db, user.id, case_id, person_id, body)
+
+
+@app.delete("/api/cases/{case_id}/people/{person_id}")
+def remove_involved_person_endpoint(case_id: str, person_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.remove_involved_person(db, user.id, case_id, person_id)
+
+
+@app.get("/api/cases/{case_id}/evidence")
+def list_case_evidence_endpoint(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.list_case_evidence(db, user.id, case_id)
+
+
 @app.post("/api/cases/{case_id}/evidence")
 async def upload_evidence(
     case_id: str,
     file: UploadFile = File(...),
+    title: str = Form(""),
     document_type: str = Form("accident_photo"),
-    category: str = Form("accident_case"),
+    category: str = Form("scene_photo"),
     notes: str = Form(""),
+    associated_case_vehicle_id: str | None = Form(None),
+    associated_person_id: str | None = Form(None),
     user: User = Depends(current_user),
     db=Depends(get_db),
 ):
     require_member(db, user.id, case_id)
     data = await file.read()
-    cdoc = central_docs_svc.save_central_document(
+    evidence_title = title.strip() or file.filename or "Incident Evidence"
+
+    # Store via Phase 2/3 StorageAdapter and CaseEvidence table
+    ev = case_svc.upload_case_evidence(
         db=db,
-        user_id=user.id,
+        actor_id=user.id,
+        case_id=case_id,
+        title=evidence_title,
         file_name=file.filename or "evidence.jpg",
-        file_data=data,
+        content=data,
         mime_type=file.content_type or "image/jpeg",
-        document_type=document_type,
-        category=category,
-        resource_type="ACCIDENT_CASE",
-        resource_id=case_id,
-        notes=notes,
+        evidence_category=category or "scene_photo",
+        description=notes,
+        associated_case_vehicle_id=associated_case_vehicle_id,
+        associated_person_id=associated_person_id,
     )
-    case_svc.add_event(db, case_id, user.id, "evidence_uploaded", f"Evidence uploaded: {cdoc.document_name}")
-    db.commit()
-    return {"ok": True, "id": cdoc.id, "document_name": cdoc.document_name}
+
+    # Cross-wallet sync with CentralDocument for unified document view
+    try:
+        central_docs_svc.save_central_document(
+            db=db,
+            user_id=user.id,
+            file_name=file.filename or "evidence.jpg",
+            file_data=data,
+            mime_type=file.content_type or "image/jpeg",
+            document_type=document_type,
+            category="accident_case",
+            resource_type="ACCIDENT_CASE",
+            resource_id=case_id,
+            notes=notes,
+        )
+    except Exception:
+        pass
+
+    return ev
 
 
+@app.get("/api/cases/{case_id}/evidence/{evidence_id}/file")
+def download_evidence_file(case_id: str, evidence_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    file_path, mime_type, filename = case_svc.get_case_evidence_file(db, user.id, case_id, evidence_id)
+    return FileResponse(file_path, media_type=mime_type, filename=filename)
+
+
+@app.delete("/api/cases/{case_id}/evidence/{evidence_id}")
+def delete_evidence_endpoint(case_id: str, evidence_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.delete_case_evidence(db, user.id, case_id, evidence_id)
+
+
+@app.get("/api/cases/{case_id}/members")
+def list_case_members_endpoint(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.list_case_members(db, user.id, case_id)
+
+
+@app.patch("/api/cases/{case_id}/members/{member_id}")
+def update_member_permissions_endpoint(case_id: str, member_id: str, body: dict, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.update_case_member_permissions(db, user.id, case_id, member_id, body)
+
+
+@app.delete("/api/cases/{case_id}/members/{member_id}")
+def remove_case_member_endpoint(case_id: str, member_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return case_svc.remove_case_member(db, user.id, case_id, member_id)
+
+
+@app.post("/api/cases/{case_id}/summary")
 @app.get("/api/cases/{case_id}/summary")
 def summary(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
     return case_svc.get_case_summary(db, user.id, case_id)
@@ -471,23 +635,365 @@ async def make_report(case_id: str, user: User = Depends(current_user)):
     return out
 
 
+# ------------------------------------------------------------------ Phase 4 Reports, Claims & Submissions Schemas
+
+class GenerateReportPayload(BaseModel):
+    report_type: str = "accident_summary"
+    title: str | None = None
+    generation_method: str = "ai_assisted"
+    custom_notes: str = ""
+
+
+class ApproveReportPayload(BaseModel):
+    version_id: str | None = None
+    notes: str = ""
+
+
+class ReviseReportPayload(BaseModel):
+    updated_content: dict
+    notes: str = ""
+
+
+class InsuranceClaimCreatePayload(BaseModel):
+    vehicle_id: str | None = None
+    policy_id: str | None = None
+    insurer_name: str | None = None
+    policy_number: str | None = None
+    claim_reference_number: str | None = None
+    claim_type: str = "own_damage"
+    incident_date: str | None = None
+    description: str = ""
+    estimated_amount: float | None = None
+    approved_amount: float | None = None
+    claim_status: str = "draft"
+    filed_at: str | None = None
+    surveyor_name: str | None = None
+    surveyor_phone: str | None = None
+    cashless_garage: str | None = None
+    metadata: dict | None = None
+
+
+class ClaimStatusUpdatePayload(BaseModel):
+    status: str
+    reason: str = ""
+
+
+class ExternalSubmissionCreatePayload(BaseModel):
+    report_id: str | None = None
+    claim_id: str | None = None
+    external_org_name: str
+    external_org_type: str = "insurer"
+    external_reference_number: str | None = None
+    submission_method: str = "manual_user_submission"
+    submission_status: str = "draft"
+    metadata: dict | None = None
+
+
+class ConfirmManualSubmissionPayload(BaseModel):
+    external_reference_number: str | None = None
+    notes: str = ""
+
+
+class AcknowledgeSubmissionPayload(BaseModel):
+    external_reference_number: str
+    response_payload: dict | None = None
+
+
+class FailSubmissionPayload(BaseModel):
+    reason: str
+
+
+# ------------------------------------------------------------------ Phase 4 Reports Endpoints
+
 @app.get("/api/cases/{case_id}/reports")
 def list_reports(case_id: str, user: User = Depends(current_user), db=Depends(get_db)):
-    require_member(db, user.id, case_id)
-    rows = db.scalars(select(Report).where(Report.case_id == case_id).order_by(Report.created_at.desc())).all()
-    return [{"report_id": r.id, "created_at": iso(r.created_at), "download_url": f"/api/cases/{case_id}/reports/{r.id}",
-             "filename": Path(r.path).name} for r in rows]
+    """List all persisted reports for an accident case with active version metadata."""
+    return report_svc.list_case_reports(db, user.id, case_id)
+
+
+@app.post("/api/cases/{case_id}/reports")
+def generate_report_endpoint(
+    case_id: str,
+    body: GenerateReportPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Generate a formal report draft from verified case data, documents, and evidence."""
+    return report_svc.generate_report(
+        db=db,
+        actor_id=user.id,
+        case_id=case_id,
+        report_type=body.report_type,
+        title=body.title,
+        generation_method=body.generation_method,
+        custom_notes=body.custom_notes,
+    )
 
 
 @app.get("/api/cases/{case_id}/reports/{report_id}")
-def download_report(case_id: str, report_id: str, uid: str = "", x_user_id: str = Header(default=""), db=Depends(get_db)):
-    # uid query param lets a plain <a href> download work; membership is still enforced.
-    actor = x_user_id or uid
-    require_member(db, actor, case_id)
-    r = db.get(Report, report_id)
-    if not r or r.case_id != case_id:
-        raise HTTPException(404, "Report not found")
-    return FileResponse(r.path, media_type="application/pdf", filename=Path(r.path).name)
+def get_report_or_download(
+    case_id: str,
+    report_id: str,
+    download: bool = False,
+    uid: str = "",
+    x_user_id: str = Header(default=""),
+    user: User | None = Depends(current_user_optional),
+    db=Depends(get_db),
+):
+    """Get structured report details or download active PDF file."""
+    actor = (user.id if user else None) or x_user_id or uid
+    if not actor:
+        raise HTTPException(401, "Authentication required")
+
+    if download:
+        path, media_type, filename = report_svc.get_report_file(db, actor, case_id, report_id)
+        return FileResponse(path, media_type=media_type, filename=filename)
+
+    return report_svc.get_report_details(db, actor, case_id, report_id)
+
+
+@app.get("/api/cases/{case_id}/reports/{report_id}/file")
+def download_report_file(
+    case_id: str,
+    report_id: str,
+    uid: str = "",
+    x_user_id: str = Header(default=""),
+    user: User | None = Depends(current_user_optional),
+    db=Depends(get_db),
+):
+    """Stream active report PDF file."""
+    actor = (user.id if user else None) or x_user_id or uid
+    if not actor:
+        raise HTTPException(401, "Authentication required")
+    path, media_type, filename = report_svc.get_report_file(db, actor, case_id, report_id)
+    return FileResponse(path, media_type=media_type, filename=filename)
+
+
+@app.get("/api/cases/{case_id}/reports/{report_id}/versions/{version_id}/file")
+def download_report_version_file(
+    case_id: str,
+    report_id: str,
+    version_id: str,
+    uid: str = "",
+    x_user_id: str = Header(default=""),
+    user: User | None = Depends(current_user_optional),
+    db=Depends(get_db),
+):
+    """Stream specific immutable report version PDF file."""
+    actor = (user.id if user else None) or x_user_id or uid
+    if not actor:
+        raise HTTPException(401, "Authentication required")
+    path, media_type, filename = report_svc.get_report_file(db, actor, case_id, report_id, version_id)
+    return FileResponse(path, media_type=media_type, filename=filename)
+
+
+@app.post("/api/cases/{case_id}/reports/{report_id}/approve")
+def approve_report_endpoint(
+    case_id: str,
+    report_id: str,
+    body: ApproveReportPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Explicit human coordinator approval of a specific report version."""
+    return report_svc.approve_report(
+        db=db,
+        actor_id=user.id,
+        case_id=case_id,
+        report_id=report_id,
+        version_id=body.version_id,
+        approval_notes=body.notes,
+    )
+
+
+@app.post("/api/cases/{case_id}/reports/{report_id}/revise")
+def revise_report_endpoint(
+    case_id: str,
+    report_id: str,
+    body: ReviseReportPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Create a new version of an existing report with user revisions (previous versions preserved)."""
+    return report_svc.revise_report(
+        db=db,
+        actor_id=user.id,
+        case_id=case_id,
+        report_id=report_id,
+        updated_content=body.updated_content,
+        revision_notes=body.notes,
+    )
+
+
+@app.delete("/api/cases/{case_id}/reports/{report_id}")
+def archive_report_endpoint(
+    case_id: str,
+    report_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Archive a report."""
+    return report_svc.archive_report(db, user.id, case_id, report_id)
+
+
+# ------------------------------------------------------------------ Phase 4 Insurance Claims Endpoints
+
+@app.get("/api/cases/{case_id}/claims")
+def list_claims_endpoint(
+    case_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """List all insurance claims recorded for a case."""
+    return claim_svc.list_case_claims(db, user.id, case_id)
+
+
+@app.post("/api/cases/{case_id}/claims")
+def create_claim_endpoint(
+    case_id: str,
+    body: InsuranceClaimCreatePayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Create a new insurance claim draft."""
+    return claim_svc.create_insurance_claim(db, user.id, case_id, body.dict())
+
+
+@app.get("/api/cases/{case_id}/claims/{claim_id}")
+def get_claim_details_endpoint(
+    case_id: str,
+    claim_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Get full claim details including external submission history."""
+    return claim_svc.get_claim_details(db, user.id, case_id, claim_id)
+
+
+@app.patch("/api/cases/{case_id}/claims/{claim_id}")
+def update_claim_endpoint(
+    case_id: str,
+    claim_id: str,
+    body: dict,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Update claim fields."""
+    return claim_svc.update_claim(db, user.id, case_id, claim_id, body)
+
+
+@app.post("/api/cases/{case_id}/claims/{claim_id}/status")
+def update_claim_status_endpoint(
+    case_id: str,
+    claim_id: str,
+    body: ClaimStatusUpdatePayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Transition claim status with audit logging."""
+    return claim_svc.update_claim_status(db, user.id, case_id, claim_id, body.status, body.reason)
+
+
+@app.delete("/api/cases/{case_id}/claims/{claim_id}")
+def delete_claim_endpoint(
+    case_id: str,
+    claim_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Soft-delete insurance claim."""
+    return claim_svc.delete_claim(db, user.id, case_id, claim_id)
+
+
+# ------------------------------------------------------------------ Phase 4 External Submissions Endpoints
+
+@app.get("/api/cases/{case_id}/submissions")
+def list_submissions_endpoint(
+    case_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """List all external authority and insurer filings for a case."""
+    return sub_svc.list_case_submissions(db, user.id, case_id)
+
+
+@app.post("/api/cases/{case_id}/submissions")
+def create_submission_endpoint(
+    case_id: str,
+    body: ExternalSubmissionCreatePayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Create a new external submission package."""
+    return sub_svc.create_external_submission(db, user.id, case_id, body.dict())
+
+
+@app.get("/api/cases/{case_id}/submissions/{submission_id}")
+def get_submission_endpoint(
+    case_id: str,
+    submission_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Get external submission details."""
+    return sub_svc.get_submission_details(db, user.id, case_id, submission_id)
+
+
+@app.post("/api/cases/{case_id}/submissions/{submission_id}/confirm-manual")
+def confirm_manual_submission_endpoint(
+    case_id: str,
+    submission_id: str,
+    body: ConfirmManualSubmissionPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Explicit user confirmation of manual external submission dispatch."""
+    return sub_svc.confirm_manual_submission(
+        db=db,
+        actor_id=user.id,
+        case_id=case_id,
+        submission_id=submission_id,
+        external_reference_number=body.external_reference_number,
+        notes=body.notes,
+    )
+
+
+@app.post("/api/cases/{case_id}/submissions/{submission_id}/acknowledge")
+def acknowledge_submission_endpoint(
+    case_id: str,
+    submission_id: str,
+    body: AcknowledgeSubmissionPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Record verified external authority receipt / acknowledgement."""
+    return sub_svc.record_submission_acknowledgement(
+        db=db,
+        actor_id=user.id,
+        case_id=case_id,
+        submission_id=submission_id,
+        external_reference_number=body.external_reference_number,
+        response_payload=body.response_payload,
+    )
+
+
+@app.post("/api/cases/{case_id}/submissions/{submission_id}/fail")
+def fail_submission_endpoint(
+    case_id: str,
+    submission_id: str,
+    body: FailSubmissionPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    """Record external submission rejection or delivery failure."""
+    return sub_svc.record_submission_failure(
+        db=db,
+        actor_id=user.id,
+        case_id=case_id,
+        submission_id=submission_id,
+        failure_reason=body.reason,
+    )
+
 
 
 # ------------------------------------------------------------------ voice (ElevenLabs)
@@ -600,6 +1106,16 @@ def update_vehicle(vehicle_id: str, body: VehicleUpdateIn, user: User = Depends(
 def delete_vehicle(vehicle_id: str, user: User = Depends(current_user), db=Depends(get_db)):
     veh_svc.delete_vehicle(db, user.id, vehicle_id)
     return {"ok": True}
+
+
+@app.post("/api/vehicles/{vehicle_id}/primary")
+def set_primary_vehicle(vehicle_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return veh_svc.set_primary_vehicle(db, user.id, vehicle_id)
+
+
+@app.get("/api/vehicles/{vehicle_id}/insurance")
+def list_vehicle_insurance(vehicle_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return veh_svc.list_vehicle_insurance_policies(db, user.id, vehicle_id)
 
 
 @app.post("/api/vehicles/{vehicle_id}/photos")
@@ -760,15 +1276,19 @@ def document_summary_endpoint(
 
 @app.get("/api/documents/{doc_id}")
 def get_document_endpoint(
+    request: Request,
     doc_id: str,
     user: User = Depends(current_user),
     db=Depends(get_db),
 ):
-    return central_docs_svc.get_document(db, user.id, doc_id)
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    return central_docs_svc.get_document(db, user.id, doc_id, ip_address=ip, user_agent=ua)
 
 
 @app.post("/api/documents")
 async def create_document_endpoint(
+    request: Request,
     file: UploadFile = File(...),
     document_name: str = Form(default=""),
     category: str = Form(default="personal"),
@@ -797,6 +1317,9 @@ async def create_document_endpoint(
         except Exception:
             pass
 
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+
     return central_docs_svc.create_document(
         db=db,
         user_id=user.id,
@@ -812,6 +1335,8 @@ async def create_document_endpoint(
         notes=notes or None,
         resource_type=resource_type,
         resource_id=resource_id or None,
+        ip_address=ip,
+        user_agent=ua,
     )
 
 
@@ -828,13 +1353,19 @@ def update_document_endpoint(
 
 @app.post("/api/documents/{doc_id}/replace")
 async def replace_document_file_endpoint(
+    request: Request,
     doc_id: str,
     file: UploadFile = File(...),
+    change_summary: str = Form(default=""),
     user: User = Depends(current_user),
     db=Depends(get_db),
 ):
     content = await file.read()
-    return central_docs_svc.replace_document_file(db, user.id, doc_id, file.filename or "document.pdf", content)
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    return central_docs_svc.replace_document_file(
+        db, user.id, doc_id, file.filename or "document.pdf", content, change_summary=change_summary or None, ip_address=ip, user_agent=ua
+    )
 
 
 @app.delete("/api/documents/{doc_id}")
@@ -850,18 +1381,61 @@ def delete_document_endpoint(
 
 @app.get("/api/documents/{doc_id}/file")
 def get_document_file_endpoint(
+    request: Request,
     doc_id: str,
     download: bool = Query(default=False),
     user: User = Depends(current_user),
     db=Depends(get_db),
 ):
-    path, mime, filename = central_docs_svc.get_document_file(db, user.id, doc_id)
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    action = "download" if download else "view"
+    path, mime, filename = central_docs_svc.get_document_file(db, user.id, doc_id, action=action, ip_address=ip, user_agent=ua)
     return FileResponse(
         path,
         media_type=mime,
         filename=filename,
         content_disposition_type="attachment" if download else "inline",
     )
+
+
+@app.get("/api/documents/{doc_id}/versions")
+def list_document_versions_endpoint(
+    doc_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return central_docs_svc.list_document_versions(db, user.id, doc_id)
+
+
+@app.get("/api/documents/{doc_id}/versions/{version_number}/file")
+def get_document_version_file_endpoint(
+    request: Request,
+    doc_id: str,
+    version_number: int,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    path, mime, filename = central_docs_svc.get_document_version_file(
+        db, user.id, doc_id, version_number, ip_address=ip, user_agent=ua
+    )
+    return FileResponse(
+        path,
+        media_type=mime,
+        filename=filename,
+        content_disposition_type="attachment",
+    )
+
+
+@app.get("/api/documents/{doc_id}/access-logs")
+def list_document_access_logs_endpoint(
+    doc_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return central_docs_svc.list_document_access_logs(db, user.id, doc_id)
 
 
 # ------------------------------------------------------------------ Ask Second Hour AI Assistant

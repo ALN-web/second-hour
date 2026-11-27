@@ -20,11 +20,21 @@ from app import config  # noqa: E402
 from app.db import (  # noqa: E402
     Base,
     Case,
+    CaseEvidence,
+    CaseInvolvedPerson,
     CaseMember,
+    CaseStatusTransition,
+    CaseVehicle,
     CentralDocument,
+    DocumentAccessLog,
+    DocumentVersion,
     EmergencyContact,
     EmergencyContactPermission,
+    ExternalSubmission,
+    InsuranceClaim,
     MedicalInformation,
+    Report,
+    ReportVersion,
     SessionLocal,
     Task,
     TimelineEvent,
@@ -399,9 +409,42 @@ def seed() -> dict:
     )
     db.add(notif)
     db.flush()
+
+    # Seed demo vehicle for Priya
+    veh = Vehicle(
+        id="veh_demo_honda",
+        user_id="u_priya",
+        registration_number="KA-01-MJ-2024",
+        category="Four Wheeler",
+        manufacturer="Honda",
+        model="City",
+        variant="ZX CVT",
+        manufacturing_year=2024,
+        fuel_type="Petrol",
+        color="Platinum White Pearl",
+        chassis_number="MAKGM2657HM019284",
+        engine_number="L15Z19827364",
+        vin="MAKGM2657HM019284",
+        engine_capacity="1498 cc",
+        transmission="Automatic (CVT)",
+        owner_name="Priya Sharma",
+        ownership_type="Individual",
+        relationship_to_user="Self",
+        main_image="/api/vehicles/veh_demo_honda/photos/vpho_demo_1/file",
+        is_primary=True,
+        is_active=True,
+        registration_date=incident_utc - timedelta(days=365 * 2),
+    )
+    db.add(veh)
+    db.flush()
+
     case = Case(
         id="case_demo",
         case_number="SH-2026-0001",
+        title="Two-Vehicle Collision — Outer Ring Road",
+        owner_id="u_priya",
+        primary_vehicle_id="veh_demo_honda",
+        is_active=True,
         status="active",
         incident_at=incident_utc,
         approximate_location="Outer Ring Road near Agara Flyover, Bengaluru",
@@ -456,31 +499,6 @@ def seed() -> dict:
     db.add(case)
     db.flush()
 
-    # Seed demo vehicle for Priya
-    veh = Vehicle(
-        id="veh_demo_honda",
-        user_id="u_priya",
-        registration_number="KA-01-MJ-2024",
-        category="Four Wheeler",
-        manufacturer="Honda",
-        model="City",
-        variant="ZX CVT",
-        manufacturing_year=2024,
-        fuel_type="Petrol",
-        color="Platinum White Pearl",
-        chassis_number="MAKGM2657HM019284",
-        engine_number="L15Z19827364",
-        vin="MAKGM2657HM019284",
-        engine_capacity="1498 cc",
-        transmission="Automatic (CVT)",
-        owner_name="Priya Sharma",
-        ownership_type="Individual",
-        relationship_to_user="Self",
-        main_image="/api/vehicles/veh_demo_honda/photos/vpho_demo_1/file",
-    )
-    db.add(veh)
-    db.flush()
-
     # Seed insurance policy expiring in 28 days
     policy_expiry = incident_utc + timedelta(days=28)
     policy_start = policy_expiry - timedelta(days=365)
@@ -493,6 +511,8 @@ def seed() -> dict:
         start_date=policy_start,
         expiry_date=policy_expiry,
         document_id="vdoc_demo_ins",
+        is_current_policy=True,
+        policy_status="active",
     )
     db.add(ins)
 
@@ -688,7 +708,32 @@ def seed() -> dict:
         resource_type="ACCIDENT_CASE",
         resource_id="case_demo",
     )
-    db.add_all([cdoc_dl, cdoc_pan, cdoc_rc, cdoc_ins, cdoc_puc, cdoc_puc_exp, cdoc_bill, cdoc_med])
+    all_cdocs = [cdoc_dl, cdoc_pan, cdoc_rc, cdoc_ins, cdoc_puc, cdoc_puc_exp, cdoc_bill, cdoc_med]
+    for cd in all_cdocs:
+        cd.storage_key = cd.stored_path
+        cd.current_version = 1
+        cd.is_active = True
+    db.add_all(all_cdocs)
+    db.flush()
+
+    # Seed initial DocumentVersion for each seeded document
+    doc_versions = []
+    for cd in all_cdocs:
+        doc_versions.append(
+            DocumentVersion(
+                id=f"dver_{cd.id}",
+                document_id=cd.id,
+                version_number=1,
+                storage_key=cd.stored_path,
+                file_name=cd.file_name,
+                mime_type=cd.mime_type,
+                file_size_bytes=cd.file_size,
+                sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                uploaded_by=cd.user_id,
+                change_summary="Initial demo document upload",
+            )
+        )
+    db.add_all(doc_versions)
 
     # Seed vehicle photo
     photo = VehiclePhoto(
@@ -697,26 +742,175 @@ def seed() -> dict:
         photo_category="main",
         file_name="honda_city_main.jpg",
         stored_path=str(config.VEHICLE_PHOTOS_DIR / "vpho_demo_1.jpg"),
+        storage_key=str(config.VEHICLE_PHOTOS_DIR / "vpho_demo_1.jpg"),
         mime_type="image/jpeg",
+        file_size_bytes=184000,
+        sha256="c71e2ef64d782dfb1e360e29b13fa25a745778a48b5df38c5b161c944eb3b1f5",
         is_primary=True,
     )
     db.add(photo)
+
+    # Seed Phase 3 Status Transitions
+    cst1 = CaseStatusTransition(
+        id="cst_demo_1",
+        case_id=case.id,
+        from_status="none",
+        to_status="active",
+        changed_by="u_priya",
+        transition_trigger="case_creation",
+        reason="Accident emergency intimation created",
+        created_at=incident_utc,
+    )
+    db.add(cst1)
+
+    # Seed Phase 3 Case Vehicles
+    cv_honda = CaseVehicle(
+        id="cv_demo_honda",
+        case_id=case.id,
+        vehicle_id="veh_demo_honda",
+        user_id="u_priya",
+        registration_number="KA-01-MJ-2024",
+        vehicle_involvement_type="primary_subject",
+        make_model="Honda City ZX CVT",
+        color="Platinum White Pearl",
+        driver_name="Ravi Kumar",
+        driver_contact="+91 98450 88291",
+        insurance_company="Tata AIG General Insurance",
+        insurance_policy_no="POL-99283401-2026",
+        damage_severity="Moderate Frontal Damage",
+        damage_description="Front bumper dislodged, left headlamp unit broken, left front fender dented",
+        is_third_party=False,
+        created_at=incident_utc,
+    )
+    cv_lorry = CaseVehicle(
+        id="cv_demo_lorry",
+        case_id=case.id,
+        vehicle_id=None,
+        user_id=None,
+        registration_number="KA-51-B-9182",
+        vehicle_involvement_type="third_party",
+        make_model="Tata 407 Commercial Vehicle",
+        color="Yellow / Brown",
+        driver_name="Manjunath Gowda",
+        driver_contact="+91 94480 33211",
+        insurance_company="National Insurance Co",
+        insurance_policy_no="NIC-7782190-2026",
+        damage_severity="Minor Right Quarter Scrape",
+        damage_description="Right side bumper paint scrapings",
+        is_third_party=True,
+        created_at=incident_utc,
+    )
+    db.add_all([cv_honda, cv_lorry])
+    db.flush()
+
+    # Seed Phase 3 Involved People
+    cip_ravi = CaseInvolvedPerson(
+        id="cip_demo_ravi",
+        case_id=case.id,
+        case_vehicle_id="cv_demo_honda",
+        associated_user_id=None,
+        full_name="Ravi Kumar",
+        involvement_type="driver",
+        relationship_to_coordinator="Spouse",
+        contact_number="+91 98450 88291",
+        reported_injury_status="moderate",
+        injury_description="Closed fracture of left radius; superficial forehead contusion",
+        hospital_name="Sample City Hospital",
+        treatment_summary="Closed reduction, immobilization with cast, conscious and oriented",
+        created_at=incident_utc,
+    )
+    cip_manjunath = CaseInvolvedPerson(
+        id="cip_demo_manjunath",
+        case_id=case.id,
+        case_vehicle_id="cv_demo_lorry",
+        associated_user_id=None,
+        full_name="Manjunath Gowda",
+        involvement_type="driver",
+        relationship_to_coordinator="Third-Party Driver",
+        contact_number="+91 94480 33211",
+        reported_injury_status="uninjured",
+        injury_description="Uninjured",
+        notes="Third-party vehicle driver",
+        created_at=incident_utc,
+    )
+    db.add_all([cip_ravi, cip_manjunath])
+    db.flush()
+
+    # Seed Phase 3 Case Evidence
+    ce_scene = CaseEvidence(
+        id="ce_demo_scene_1",
+        case_id=case.id,
+        uploaded_by="u_priya",
+        evidence_category="scene_photo",
+        title="Accident Location Intersection Overview",
+        description="Scene photograph showing vehicle positions on outer lane of Ring Road",
+        storage_key="evidence/case_demo/scene_intersection_1.jpg",
+        original_filename="scene_intersection_1.jpg",
+        mime_type="image/jpeg",
+        file_size_bytes=245000,
+        sha256="a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef0",
+        evidence_source="user_upload",
+        associated_case_vehicle_id="cv_demo_honda",
+        verification_status="verified",
+        capture_timestamp=incident_utc,
+        created_at=incident_utc + timedelta(minutes=15),
+    )
+    ce_damage = CaseEvidence(
+        id="ce_demo_damage_1",
+        case_id=case.id,
+        uploaded_by="u_priya",
+        evidence_category="vehicle_damage",
+        title="Honda City Front-Left Bumper & Headlamp Damage",
+        description="Close-up photograph of broken headlight lens and deformed front bumper",
+        storage_key="evidence/case_demo/honda_city_damage_left.jpg",
+        original_filename="honda_city_damage_left.jpg",
+        mime_type="image/jpeg",
+        file_size_bytes=312000,
+        sha256="b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef01",
+        evidence_source="user_upload",
+        associated_case_vehicle_id="cv_demo_honda",
+        verification_status="verified",
+        capture_timestamp=incident_utc,
+        created_at=incident_utc + timedelta(minutes=18),
+    )
+    db.add_all([ce_scene, ce_damage])
+
     db.add_all([
         CaseMember(
+            id="cm_demo_priya",
             case_id=case.id,
             user_id="u_priya",
+            member_name="Priya Sharma",
+            member_phone="+91 98450 12345",
             role="coordinator",
             relationship="Spouse",
             contact_number="+91 98450 12345",
             permissions_summary="Full Case Access, Financial Approvals",
+            invitation_status="active",
+            can_view_case=True,
+            can_upload_evidence=True,
+            can_view_documents=True,
+            can_manage_tasks=True,
+            can_approve_reports=True,
+            can_view_medical=True,
         ),
         CaseMember(
+            id="cm_demo_arjun",
             case_id=case.id,
             user_id="u_arjun",
+            member_name="Arjun Sharma",
+            member_phone="+91 98450 67890",
             role="member",
             relationship="Brother",
             contact_number="+91 98450 67890",
             permissions_summary="View Case, Coordinate Tasks & Garage",
+            invitation_status="active",
+            can_view_case=True,
+            can_upload_evidence=True,
+            can_view_documents=True,
+            can_manage_tasks=True,
+            can_approve_reports=False,
+            can_view_medical=False,
         ),
         # Seed case tasks
         Task(
@@ -807,6 +1001,108 @@ def seed() -> dict:
             at=incident_utc + timedelta(hours=5),
         ),
     ])
+    db.flush()
+
+    # Seed Phase 4 Report & Version
+    rpt_demo = Report(
+        id="rpt_demo_summary",
+        case_id=case.id,
+        created_by="u_priya",
+        title="Comprehensive Accident Incident & Damage Report",
+        report_type="accident_summary",
+        status="approved",
+        generation_source="ai_generated",
+        approved_by="u_priya",
+        approved_at=incident_utc + timedelta(hours=4),
+        is_active=True,
+    )
+    db.add(rpt_demo)
+    db.flush()
+
+    rptv_demo = ReportVersion(
+        id="rptv_demo_v1",
+        report_id=rpt_demo.id,
+        version_number=1,
+        content_json={
+            "report_type": "accident_summary",
+            "title": "Comprehensive Accident Incident & Damage Report",
+            "case_number": case.case_number,
+            "incident": {
+                "location": case.approximate_location,
+                "weather": case.weather_conditions,
+                "collision_type": case.accident_type,
+            },
+            "ai_synthesis": {
+                "is_ai_generated": True,
+                "model": "gemini-1.5-flash-grounded",
+                "summary": "Verified collision overview and damage inventory synthesized for insurer and police review.",
+            },
+            "missing_information": [],
+        },
+        storage_key="reports/SH-2026-0001_rpt_demo_v1.pdf",
+        file_size_bytes=18400,
+        sha256="c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4",
+        generated_by="u_priya",
+        generation_method="ai_assisted",
+        ai_model="gemini-1.5-flash-grounded",
+        source_references_json=[
+            {"type": "case", "id": case.id},
+            {"type": "vehicle", "id": "veh_demo_honda"},
+            {"type": "person", "id": "cip_demo_ravi"},
+        ],
+        version_status="approved",
+        created_at=incident_utc + timedelta(hours=3, minutes=30),
+    )
+    db.add(rptv_demo)
+    db.flush()
+
+    rpt_demo.current_version_id = rptv_demo.id
+
+    # Seed Phase 4 Insurance Claim
+    claim_demo = InsuranceClaim(
+        id="claim_demo_1",
+        case_id=case.id,
+        vehicle_id="veh_demo_honda",
+        policy_id="vpol_demo_1",
+        created_by="u_priya",
+        insurer_name="Tata AIG General Insurance",
+        policy_number="POL-99283401-2026",
+        claim_reference_number="CLM-AIG-0001-2026",
+        claim_type="own_damage",
+        incident_date=incident_utc,
+        description="Comprehensive own-damage claim for front bumper and headlight assembly replacement.",
+        estimated_amount=45000.0,
+        approved_amount=42500.0,
+        claim_status="approved_by_user",
+        filed_at=incident_utc + timedelta(hours=3),
+        surveyor_name="Anand Verma",
+        surveyor_phone="+91 98450 19284",
+        cashless_garage="Authorized Honda Service Centre, Koramangala",
+        metadata_json={"cashless_approved": True, "network_garage": True},
+        is_active=True,
+        created_at=incident_utc + timedelta(hours=3),
+    )
+    db.add(claim_demo)
+    db.flush()
+
+    # Seed Phase 4 External Submission
+    sub_demo = ExternalSubmission(
+        id="exsub_demo_1",
+        case_id=case.id,
+        report_id=rpt_demo.id,
+        claim_id=claim_demo.id,
+        submitted_by="u_priya",
+        external_org_name="Tata AIG General Insurance Claims Portal",
+        external_org_type="insurer",
+        external_reference_number="TATAAIG-ACK-9021-2026",
+        submission_method="portal_upload",
+        submission_status="submitted",
+        submitted_at=incident_utc + timedelta(hours=5),
+        metadata_json={"manual_user_confirmed": True, "portal_submission_id": "CLM-SUB-2026-9021"},
+        created_at=incident_utc + timedelta(hours=4, minutes=30),
+    )
+    db.add(sub_demo)
+    db.flush()
     db.commit()
     db.close()
     make_demo_assets(incident_ist)
