@@ -1,27 +1,122 @@
-"""SQLAlchemy models (SQLite, one file)."""
+"""SQLAlchemy models and database connectivity layer (PostgreSQL / SQLite)."""
 from __future__ import annotations
 
 import json
+import logging
+import urllib.parse
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from typing import Generator
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, event
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, event, select, text
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-from app.config import DB_PATH
+from app.config import DATABASE_URL, DB_PATH
 
-engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False, "timeout": 30})
+logger = logging.getLogger(__name__)
+
+
+def _build_database_url() -> tuple[str, dict]:
+    """Return database URL and engine connect args appropriate for target dialect."""
+    raw_url = (DATABASE_URL or "").strip()
+    if raw_url:
+        # Normalize postgres:// to postgresql:// for SQLAlchemy 2.x
+        if raw_url.startswith("postgres://"):
+            raw_url = "postgresql://" + raw_url[len("postgres://"):]
+        # Default to psycopg2 driver if not explicitly specified
+        if raw_url.startswith("postgresql://") and not raw_url.startswith("postgresql+"):
+            raw_url = "postgresql+psycopg2://" + raw_url[len("postgresql://"):]
+        return raw_url, {}
+    return f"sqlite:///{DB_PATH}", {"check_same_thread": False, "timeout": 30}
+
+
+def create_app_engine():
+    """Create and configure SQLAlchemy engine with connection pooling and serverless resilience."""
+    url, connect_args = _build_database_url()
+    if url.startswith("sqlite"):
+        return create_engine(url, connect_args=connect_args)
+
+    # Neon PostgreSQL serverless connection pooling & resilience:
+    # - pool_pre_ping: tests connection before checkout, preventing stale socket errors on auto-resume
+    # - pool_recycle: re-establishes connections older than 300s
+    # - pool_size / max_overflow: handles concurrent requests within serverless connection budgets
+    return create_engine(
+        url,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        pool_size=10,
+        max_overflow=20,
+        connect_args={"connect_timeout": 15},
+    )
+
+
+engine = create_app_engine()
 
 
 @event.listens_for(engine, "connect")
 def _sqlite_pragmas(dbapi_conn, _):
-    cur = dbapi_conn.cursor()
-    cur.execute("PRAGMA journal_mode=WAL")
-    cur.execute("PRAGMA foreign_keys=ON")
-    cur.close()
+    """Enforce WAL mode and foreign keys when using SQLite dialect."""
+    if engine.dialect.name == "sqlite":
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
 
 
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+
+
+@contextmanager
+def get_db_context() -> Generator[Session, None, None]:
+    """Reusable transactional context manager for database sessions."""
+    db = SessionLocal()
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def check_connection() -> dict:
+    """Test connection to the active database and return sanitized diagnostics without credentials."""
+    url, _ = _build_database_url()
+    is_postgres = not url.startswith("sqlite")
+    masked_target = "sqlite local file"
+    if is_postgres:
+        parsed = urllib.parse.urlsplit(url)
+        masked_target = f"PostgreSQL ({parsed.hostname}:{parsed.port or 5432}/{parsed.path.lstrip('/')})"
+
+    try:
+        with engine.connect() as conn:
+            query_result = conn.execute(select(1)).scalar()
+            db_version = "unknown"
+            current_db = "unknown"
+            if is_postgres:
+                version_row = conn.execute(text("SELECT version(), current_database()")).first()
+                if version_row:
+                    db_version = version_row[0]
+                    current_db = version_row[1]
+            return {
+                "ok": True,
+                "is_postgres": is_postgres,
+                "dialect": engine.dialect.name,
+                "target": masked_target,
+                "query_result": query_result,
+                "db_version": db_version,
+                "current_database": current_db,
+            }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "is_postgres": is_postgres,
+            "dialect": engine.dialect.name,
+            "target": masked_target,
+            "error": str(exc),
+        }
 
 
 def utcnow() -> datetime:
@@ -433,4 +528,10 @@ class UserNotificationPreference(Base):
 
 
 def init_db() -> None:
-    Base.metadata.create_all(engine)
+    """Initialize database schema safely, reporting diagnostic details if unavailable."""
+    try:
+        Base.metadata.create_all(engine)
+        logger.info("Database schema initialized successfully (dialect: %s)", engine.dialect.name)
+    except Exception as exc:
+        logger.error("Failed to initialize database schema: %s", exc)
+        raise
