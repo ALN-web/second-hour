@@ -22,6 +22,8 @@ from app.db import (  # noqa: E402
     Case,
     CaseMember,
     CentralDocument,
+    DocumentAccessLog,
+    DocumentVersion,
     EmergencyContact,
     EmergencyContactPermission,
     MedicalInformation,
@@ -477,6 +479,9 @@ def seed() -> dict:
         ownership_type="Individual",
         relationship_to_user="Self",
         main_image="/api/vehicles/veh_demo_honda/photos/vpho_demo_1/file",
+        is_primary=True,
+        is_active=True,
+        registration_date=incident_utc - timedelta(days=365 * 2),
     )
     db.add(veh)
     db.flush()
@@ -493,6 +498,8 @@ def seed() -> dict:
         start_date=policy_start,
         expiry_date=policy_expiry,
         document_id="vdoc_demo_ins",
+        is_current_policy=True,
+        policy_status="active",
     )
     db.add(ins)
 
@@ -688,7 +695,32 @@ def seed() -> dict:
         resource_type="ACCIDENT_CASE",
         resource_id="case_demo",
     )
-    db.add_all([cdoc_dl, cdoc_pan, cdoc_rc, cdoc_ins, cdoc_puc, cdoc_puc_exp, cdoc_bill, cdoc_med])
+    all_cdocs = [cdoc_dl, cdoc_pan, cdoc_rc, cdoc_ins, cdoc_puc, cdoc_puc_exp, cdoc_bill, cdoc_med]
+    for cd in all_cdocs:
+        cd.storage_key = cd.stored_path
+        cd.current_version = 1
+        cd.is_active = True
+    db.add_all(all_cdocs)
+    db.flush()
+
+    # Seed initial DocumentVersion for each seeded document
+    doc_versions = []
+    for cd in all_cdocs:
+        doc_versions.append(
+            DocumentVersion(
+                id=f"dver_{cd.id}",
+                document_id=cd.id,
+                version_number=1,
+                storage_key=cd.stored_path,
+                file_name=cd.file_name,
+                mime_type=cd.mime_type,
+                file_size_bytes=cd.file_size,
+                sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                uploaded_by=cd.user_id,
+                change_summary="Initial demo document upload",
+            )
+        )
+    db.add_all(doc_versions)
 
     # Seed vehicle photo
     photo = VehiclePhoto(
@@ -697,7 +729,10 @@ def seed() -> dict:
         photo_category="main",
         file_name="honda_city_main.jpg",
         stored_path=str(config.VEHICLE_PHOTOS_DIR / "vpho_demo_1.jpg"),
+        storage_key=str(config.VEHICLE_PHOTOS_DIR / "vpho_demo_1.jpg"),
         mime_type="image/jpeg",
+        file_size_bytes=184000,
+        sha256="c71e2ef64d782dfb1e360e29b13fa25a745778a48b5df38c5b161c944eb3b1f5",
         is_primary=True,
     )
     db.add(photo)

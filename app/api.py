@@ -602,6 +602,16 @@ def delete_vehicle(vehicle_id: str, user: User = Depends(current_user), db=Depen
     return {"ok": True}
 
 
+@app.post("/api/vehicles/{vehicle_id}/primary")
+def set_primary_vehicle(vehicle_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return veh_svc.set_primary_vehicle(db, user.id, vehicle_id)
+
+
+@app.get("/api/vehicles/{vehicle_id}/insurance")
+def list_vehicle_insurance(vehicle_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return veh_svc.list_vehicle_insurance_policies(db, user.id, vehicle_id)
+
+
 @app.post("/api/vehicles/{vehicle_id}/photos")
 async def upload_vehicle_photo(
     vehicle_id: str,
@@ -760,15 +770,19 @@ def document_summary_endpoint(
 
 @app.get("/api/documents/{doc_id}")
 def get_document_endpoint(
+    request: Request,
     doc_id: str,
     user: User = Depends(current_user),
     db=Depends(get_db),
 ):
-    return central_docs_svc.get_document(db, user.id, doc_id)
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    return central_docs_svc.get_document(db, user.id, doc_id, ip_address=ip, user_agent=ua)
 
 
 @app.post("/api/documents")
 async def create_document_endpoint(
+    request: Request,
     file: UploadFile = File(...),
     document_name: str = Form(default=""),
     category: str = Form(default="personal"),
@@ -797,6 +811,9 @@ async def create_document_endpoint(
         except Exception:
             pass
 
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+
     return central_docs_svc.create_document(
         db=db,
         user_id=user.id,
@@ -812,6 +829,8 @@ async def create_document_endpoint(
         notes=notes or None,
         resource_type=resource_type,
         resource_id=resource_id or None,
+        ip_address=ip,
+        user_agent=ua,
     )
 
 
@@ -828,13 +847,19 @@ def update_document_endpoint(
 
 @app.post("/api/documents/{doc_id}/replace")
 async def replace_document_file_endpoint(
+    request: Request,
     doc_id: str,
     file: UploadFile = File(...),
+    change_summary: str = Form(default=""),
     user: User = Depends(current_user),
     db=Depends(get_db),
 ):
     content = await file.read()
-    return central_docs_svc.replace_document_file(db, user.id, doc_id, file.filename or "document.pdf", content)
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    return central_docs_svc.replace_document_file(
+        db, user.id, doc_id, file.filename or "document.pdf", content, change_summary=change_summary or None, ip_address=ip, user_agent=ua
+    )
 
 
 @app.delete("/api/documents/{doc_id}")
@@ -850,18 +875,61 @@ def delete_document_endpoint(
 
 @app.get("/api/documents/{doc_id}/file")
 def get_document_file_endpoint(
+    request: Request,
     doc_id: str,
     download: bool = Query(default=False),
     user: User = Depends(current_user),
     db=Depends(get_db),
 ):
-    path, mime, filename = central_docs_svc.get_document_file(db, user.id, doc_id)
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    action = "download" if download else "view"
+    path, mime, filename = central_docs_svc.get_document_file(db, user.id, doc_id, action=action, ip_address=ip, user_agent=ua)
     return FileResponse(
         path,
         media_type=mime,
         filename=filename,
         content_disposition_type="attachment" if download else "inline",
     )
+
+
+@app.get("/api/documents/{doc_id}/versions")
+def list_document_versions_endpoint(
+    doc_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return central_docs_svc.list_document_versions(db, user.id, doc_id)
+
+
+@app.get("/api/documents/{doc_id}/versions/{version_number}/file")
+def get_document_version_file_endpoint(
+    request: Request,
+    doc_id: str,
+    version_number: int,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    path, mime, filename = central_docs_svc.get_document_version_file(
+        db, user.id, doc_id, version_number, ip_address=ip, user_agent=ua
+    )
+    return FileResponse(
+        path,
+        media_type=mime,
+        filename=filename,
+        content_disposition_type="attachment",
+    )
+
+
+@app.get("/api/documents/{doc_id}/access-logs")
+def list_document_access_logs_endpoint(
+    doc_id: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return central_docs_svc.list_document_access_logs(db, user.id, doc_id)
 
 
 # ------------------------------------------------------------------ Ask Second Hour AI Assistant

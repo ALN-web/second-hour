@@ -1,7 +1,7 @@
 """Shared helpers: errors, membership checks, timeline, serialisation."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -16,8 +16,12 @@ class PermissionDenied(ServiceError):
     pass
 
 
-def iso(dt: datetime | None) -> str | None:
-    return dt.isoformat(timespec="minutes") if dt else None
+def iso(dt: datetime | date | None) -> str | None:
+    if not dt:
+        return None
+    if isinstance(dt, datetime):
+        return dt.isoformat(timespec="minutes")
+    return dt.isoformat()
 
 
 def parse_dt(value: str | None, field: str) -> datetime | None:

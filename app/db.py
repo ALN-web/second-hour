@@ -342,6 +342,10 @@ class Vehicle(Base):
     ownership_type: Mapped[str] = mapped_column(String, default="Individual")
     relationship_to_user: Mapped[str | None] = mapped_column(String, nullable=True)
     main_image: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    registration_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -368,7 +372,10 @@ class VehiclePhoto(Base):
     photo_category: Mapped[str] = mapped_column(String, default="main")  # main | front | rear | left | right | additional
     file_name: Mapped[str] = mapped_column(String)
     stored_path: Mapped[str] = mapped_column(String)
+    storage_key: Mapped[str] = mapped_column(String, default="")
     mime_type: Mapped[str] = mapped_column(String)
+    file_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    sha256: Mapped[str | None] = mapped_column(String, nullable=True)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -383,7 +390,12 @@ class VehicleInsurancePolicy(Base):
     start_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expiry_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     document_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_current_policy: Mapped[bool] = mapped_column(Boolean, default=True)
+    policy_status: Mapped[str] = mapped_column(String, default="active")  # active | expired | renewed | cancelled
+    superseded_by_policy_id: Mapped[str | None] = mapped_column(ForeignKey("vehicle_insurance_policies.id", ondelete="SET NULL"), nullable=True)
+    coverage_details: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class CentralDocument(Base):
@@ -395,6 +407,7 @@ class CentralDocument(Base):
     category: Mapped[str] = mapped_column(String, index=True)  # personal, driving_licence, vehicle, insurance, medical, accident_case, other
     file_name: Mapped[str] = mapped_column(String)
     stored_path: Mapped[str] = mapped_column(String)
+    storage_key: Mapped[str] = mapped_column(String, default="")
     mime_type: Mapped[str] = mapped_column(String)
     file_size: Mapped[int] = mapped_column(Integer, default=0)
     sha256: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -406,9 +419,51 @@ class CentralDocument(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     resource_type: Mapped[str] = mapped_column(String, default="USER")  # USER | VEHICLE | ACCIDENT_CASE
     resource_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)  # user_id, vehicle_id, or case_id
+    current_version: Mapped[int] = mapped_column(Integer, default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    versions: Mapped[list[DocumentVersion]] = orm_relationship("DocumentVersion", back_populates="document", cascade="all, delete-orphan", order_by="desc(DocumentVersion.version_number)")
+    access_logs: Mapped[list[DocumentAccessLog]] = orm_relationship("DocumentAccessLog", back_populates="document", cascade="all, delete-orphan", order_by="desc(DocumentAccessLog.accessed_at)")
+
+
+class DocumentVersion(Base):
+    """Historical revision archive for re-uploaded or renewed central documents."""
+    __tablename__ = "document_versions"
+    __table_args__ = (UniqueConstraint("document_id", "version_number", name="uq_document_version"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("dver"))
+    document_id: Mapped[str] = mapped_column(ForeignKey("central_documents.id", ondelete="CASCADE"), index=True)
+    version_number: Mapped[int] = mapped_column(Integer, default=1)
+    storage_key: Mapped[str] = mapped_column(String)
+    file_name: Mapped[str] = mapped_column(String)
+    mime_type: Mapped[str] = mapped_column(String)
+    file_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    sha256: Mapped[str] = mapped_column(String)
+    uploaded_by: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    change_summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    document: Mapped[CentralDocument] = orm_relationship("CentralDocument", back_populates="versions")
+
+
+class DocumentAccessLog(Base):
+    """Append-only audit trail for viewing, downloading, exporting, or sharing sensitive documents."""
+    __tablename__ = "document_access_logs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("central_documents.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    action: Mapped[str] = mapped_column(String)  # 'view', 'download', 'upload', 'replace', 'delete'
+    access_channel: Mapped[str] = mapped_column(String, default="web_dashboard")
+    purpose: Mapped[str | None] = mapped_column(String, nullable=True)
+    case_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String, nullable=True)
+    accessed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    document: Mapped[CentralDocument] = orm_relationship("CentralDocument", back_populates="access_logs")
 
 
 class Conversation(Base):
