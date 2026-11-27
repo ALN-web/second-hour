@@ -18,6 +18,8 @@ from reportlab.pdfgen import canvas  # noqa: E402
 
 from app import config  # noqa: E402
 from app.db import (  # noqa: E402
+    AIActionLog,
+    AuditLog,
     Base,
     Case,
     CaseEvidence,
@@ -26,6 +28,9 @@ from app.db import (  # noqa: E402
     CaseStatusTransition,
     CaseVehicle,
     CentralDocument,
+    ConsentRecord,
+    Conversation,
+    ConversationMessage,
     DocumentAccessLog,
     DocumentVersion,
     EmergencyContact,
@@ -390,6 +395,11 @@ def seed() -> dict:
         ai_include_vehicles=True,
         ai_include_cases=True,
         allow_emergency_broadcast=True,
+        conversation_retention_days=90,
+        personalization_enabled=True,
+        analytics_enabled=False,
+        data_sharing_preferences={"allow_insurance_sharing": True, "allow_police_sharing": True},
+        medical_info_sharing_enabled=False,
     )
     db.add(priv)
 
@@ -401,13 +411,71 @@ def seed() -> dict:
         sms_notifications=True,
         in_app_notifications=True,
         whatsapp_notifications=False,
+        push_notifications=True,
         accident_alerts=True,
         case_updates=True,
         document_expiry_reminders=True,
         insurance_renewal_reminders=True,
         pending_task_reminders=True,
+        ai_action_notifications=True,
+        quiet_hours_enabled=False,
+        quiet_hours_start="22:00",
+        quiet_hours_end="07:00",
+        quiet_hours_timezone="Asia/Kolkata",
+        preferred_language="en",
     )
     db.add(notif)
+
+    # Seed Consent Records for Priya
+    cr_tos = ConsentRecord(
+        id="csnt_priya_tos",
+        user_id="u_priya",
+        consent_type="terms_of_service",
+        consent_status="granted",
+        policy_version="v2.1",
+        consent_source="web_onboarding",
+        ip_address="127.0.0.1",
+        user_agent="Mozilla/5.0",
+        metadata_json={"source": "onboarding_flow"},
+        consent_timestamp=incident_utc - timedelta(days=60),
+    )
+    cr_priv = ConsentRecord(
+        id="csnt_priya_priv",
+        user_id="u_priya",
+        consent_type="privacy_policy",
+        consent_status="granted",
+        policy_version="v2.1",
+        consent_source="web_onboarding",
+        ip_address="127.0.0.1",
+        user_agent="Mozilla/5.0",
+        metadata_json={"source": "onboarding_flow"},
+        consent_timestamp=incident_utc - timedelta(days=60),
+    )
+    cr_ai = ConsentRecord(
+        id="csnt_priya_ai",
+        user_id="u_priya",
+        consent_type="ai_data_processing",
+        consent_status="granted",
+        policy_version="v1.0",
+        consent_source="ai_assistant_modal",
+        ip_address="127.0.0.1",
+        user_agent="Mozilla/5.0",
+        metadata_json={"explicit_opt_in": True},
+        consent_timestamp=incident_utc - timedelta(days=30),
+    )
+    cr_rahat = ConsentRecord(
+        id="csnt_priya_rahat",
+        user_id="u_priya",
+        consent_type="pm_rahat_claim_intake",
+        consent_status="granted",
+        policy_version="v1.0",
+        consent_source="case_intake_wizard",
+        ip_address="127.0.0.1",
+        user_agent="Mozilla/5.0",
+        metadata_json={"case_id": "case_demo"},
+        consent_timestamp=incident_utc + timedelta(hours=1),
+    )
+    db.add_all([cr_tos, cr_priv, cr_ai, cr_rahat])
     db.flush()
 
     # Seed demo vehicle for Priya
@@ -1103,6 +1171,100 @@ def seed() -> dict:
     )
     db.add(sub_demo)
     db.flush()
+
+    # Seed Phase 5 AI Conversation & Messages
+    conv_demo = Conversation(
+        id="conv_demo_1",
+        user_id="u_priya",
+        case_id="case_demo",
+        title="Incident Guidance & Insurance Claim Assistance",
+        status="active",
+        ai_provider="gemini",
+        model_identifier="gemini-1.5-flash",
+        last_message_at=incident_utc + timedelta(hours=4),
+        created_at=incident_utc + timedelta(hours=1),
+    )
+    db.add(conv_demo)
+    db.flush()
+
+    msg_1 = ConversationMessage(
+        id="cmsg_demo_1",
+        conversation_id=conv_demo.id,
+        sender="user",
+        sender_type="user",
+        content="What are the essential steps I need to complete for PM-RAHAT hospital cashless clearance?",
+        content_format="text",
+        sequence_number=1,
+        created_at=incident_utc + timedelta(hours=1),
+    )
+    msg_2 = ConversationMessage(
+        id="cmsg_demo_2",
+        conversation_id=conv_demo.id,
+        sender="assistant",
+        sender_type="assistant",
+        content="Under the PM-RAHAT scheme, trauma stabilization up to Rs. 1,50,000 is cashless for the first 7 days. Ensure the hospital intimates local traffic police for scheme verification.",
+        content_format="markdown",
+        sequence_number=2,
+        citations_json='[{"id":"cite_pmrahat_1","type":"OFFICIAL_GOVERNMENT","title":"PM-RAHAT Guidelines (MoRTH)","snippet":"Cashless treatment up to Rs. 1.5 lakh during the golden hour window."}]',
+        source_references_json=[{"id": "cite_pmrahat_1", "type": "OFFICIAL_GOVERNMENT", "title": "PM-RAHAT Guidelines (MoRTH)"}],
+        action_cards_json='[]',
+        suggested_followups_json='["Does the scheme require an upfront deposit?","How to file police draft?"]',
+        ai_model_metadata={"provider": "gemini", "model": "gemini-1.5-flash"},
+        token_usage_metadata={"prompt_tokens": 18, "completion_tokens": 42, "total_tokens": 60},
+        created_at=incident_utc + timedelta(hours=1, minutes=1),
+    )
+    db.add_all([msg_1, msg_2])
+    db.flush()
+
+    # Seed Phase 5 AI Action Log
+    act_demo = AIActionLog(
+        id="aiact_demo_1",
+        user_id="u_priya",
+        conversation_id=conv_demo.id,
+        case_id="case_demo",
+        action_type="PREPARE_REPORT",
+        action_description="Consolidate police statement and repair estimate package for insurer",
+        input_metadata={"case_id": "case_demo", "target": "insurer"},
+        output_metadata={"report_id": "rpt_demo_summary"},
+        action_status="completed",
+        approval_required=True,
+        approved_by="u_priya",
+        approval_timestamp=incident_utc + timedelta(hours=3, minutes=15),
+        execution_timestamp=incident_utc + timedelta(hours=3, minutes=20),
+        created_at=incident_utc + timedelta(hours=3),
+    )
+    db.add(act_demo)
+    db.flush()
+
+    # Seed Phase 5 Audit Log entries
+    audit_demo_1 = AuditLog(
+        case_id="case_demo",
+        actor_id="u_priya",
+        actor_type="user",
+        action_type="grant_consent",
+        resource_type="consent_record",
+        resource_id=cr_rahat.id,
+        tool="privacy.grant_consent",
+        arguments_json='{"consent_type": "pm_rahat_claim_intake"}',
+        result_summary="User granted PM-RAHAT claim intake consent",
+        action_outcome="success",
+        at=incident_utc + timedelta(hours=1),
+    )
+    audit_demo_2 = AuditLog(
+        case_id="case_demo",
+        actor_id="u_priya",
+        actor_type="user",
+        action_type="approve_ai_action",
+        resource_type="ai_action",
+        resource_id=act_demo.id,
+        tool="assistant.approve_action",
+        arguments_json='{"action_id": "aiact_demo_1"}',
+        result_summary="User approved AI action 'PREPARE_REPORT'",
+        action_outcome="success",
+        at=incident_utc + timedelta(hours=3, minutes=15),
+    )
+    db.add_all([audit_demo_1, audit_demo_2])
+
     db.commit()
     db.close()
     make_demo_assets(incident_ist)

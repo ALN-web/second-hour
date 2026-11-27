@@ -27,6 +27,7 @@ from app.db import (
     Vehicle,
     VehicleInsurancePolicy,
     VehiclePhoto,
+    new_id,
 )
 from app.services import central_documents as cdocs_svc
 from app.services import vehicles as veh_svc
@@ -137,6 +138,7 @@ def test_phase2_insurance_renewal_preserves_history():
         old_pol_id = curr["id"]
 
         # Renew policy with new policy number and future expiry
+        new_pol_num = f"POL-RENEW-{new_id('p')[:8]}"
         veh_svc.update_vehicle(
             db,
             user_id="u_priya",
@@ -144,9 +146,9 @@ def test_phase2_insurance_renewal_preserves_history():
             data={
                 "insurance": {
                     "provider": "Tata AIG General Insurance",
-                    "policy_number": "POL-99283401-2027",
+                    "policy_number": new_pol_num,
                     "policy_type": "Comprehensive (Zero Dep)",
-                    "expiry_date": "2027-04-15T00:00:00Z",
+                    "expiry_date": "2028-04-15T00:00:00Z",
                 }
             },
         )
@@ -163,7 +165,7 @@ def test_phase2_insurance_renewal_preserves_history():
         new_pol = next(p for p in policies_after if p["id"] == old_pol["superseded_by_policy_id"])
         assert new_pol["is_current_policy"] is True
         assert new_pol["policy_status"] == "active"
-        assert new_pol["policy_number"] == "POL-99283401-2027"
+        assert new_pol["policy_number"] == new_pol_num
     finally:
         db.close()
 

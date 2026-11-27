@@ -498,13 +498,39 @@ class PendingAction(Base):
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    case_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    actor_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    tool: Mapped[str] = mapped_column(String)
-    arguments_json: Mapped[str] = mapped_column(Text)
-    result_summary: Mapped[str] = mapped_column(Text)
-    approval_state: Mapped[str] = mapped_column(String)  # auto_read_only|proposed|approved|rejected|error
+    case_id: Mapped[str | None] = mapped_column(ForeignKey("cases.id", ondelete="SET NULL"), nullable=True)
+    actor_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    actor_type: Mapped[str] = mapped_column(String, default="user")  # user, system, ai, api
+    action_type: Mapped[str] = mapped_column(String, default="action")
+    resource_type: Mapped[str] = mapped_column(String, default="general")
+    resource_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    tool: Mapped[str | None] = mapped_column(String, nullable=True)
+    arguments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_summary: Mapped[str] = mapped_column(Text, default="")
+    action_outcome: Mapped[str] = mapped_column(String, default="success")  # success, failure, denied
+    request_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    approval_state: Mapped[str] = mapped_column(String, default="standard")  # auto_read_only|proposed|approved|rejected|error
+    sanitized_metadata: Mapped[dict | None] = mapped_column(JSON, default=dict)
     at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AIActionLog(Base):
+    __tablename__ = "ai_action_logs"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("aiact"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    conversation_id: Mapped[str | None] = mapped_column(ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, index=True)
+    case_id: Mapped[str | None] = mapped_column(ForeignKey("cases.id", ondelete="SET NULL"), nullable=True, index=True)
+    action_type: Mapped[str] = mapped_column(String, index=True)
+    action_description: Mapped[str] = mapped_column(Text)
+    input_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    output_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    action_status: Mapped[str] = mapped_column(String, default="proposed", index=True)  # proposed | awaiting_approval | approved | rejected | executing | completed | failed | cancelled
+    approval_required: Mapped[bool] = mapped_column(Boolean, default=True)
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    approval_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    execution_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class ChatMessage(Base):
@@ -667,11 +693,19 @@ class Conversation(Base):
     __tablename__ = "conversations"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("conv"))
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    case_id: Mapped[str | None] = mapped_column(ForeignKey("cases.id", ondelete="SET NULL"), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String, default="New Conversation")
+    status: Mapped[str] = mapped_column(String, default="active", index=True)  # active | archived
+    ai_provider: Mapped[str] = mapped_column(String, default="gemini")
+    model_identifier: Mapped[str | None] = mapped_column(String, nullable=True)
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     context_metadata: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    messages: Mapped[list[ConversationMessage]] = orm_relationship("ConversationMessage", back_populates="conversation", cascade="all, delete-orphan", order_by="ConversationMessage.sequence_number")
 
 
 class ConversationMessage(Base):
@@ -679,11 +713,20 @@ class ConversationMessage(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("cmsg"))
     conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
     sender: Mapped[str] = mapped_column(String)  # user | assistant
+    sender_type: Mapped[str] = mapped_column(String, default="user")  # user | assistant | system | tool
     content: Mapped[str] = mapped_column(Text)
+    content_format: Mapped[str] = mapped_column(String, default="text")  # text | markdown | json
+    sequence_number: Mapped[int] = mapped_column(Integer, default=1)
+    tool_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_references_json: Mapped[list | dict | None] = mapped_column(JSON, default=list)
+    ai_model_metadata: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    token_usage_metadata: Mapped[dict | None] = mapped_column(JSON, default=dict)
     citations_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     action_cards_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     suggested_followups_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    conversation: Mapped[Conversation] = orm_relationship("Conversation", back_populates="messages")
 
 
 class EmergencyContact(Base):
@@ -822,6 +865,11 @@ class UserPrivacyPreference(Base):
     ai_include_vehicles: Mapped[bool] = mapped_column(Boolean, default=True)
     ai_include_cases: Mapped[bool] = mapped_column(Boolean, default=True)
     allow_emergency_broadcast: Mapped[bool] = mapped_column(Boolean, default=True)
+    conversation_retention_days: Mapped[int] = mapped_column(Integer, default=365)
+    personalization_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    analytics_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    data_sharing_preferences: Mapped[dict] = mapped_column(JSON, default=lambda: {"anonymized_research": False, "insurer_direct_share": False})
+    medical_info_sharing_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -834,13 +882,36 @@ class UserNotificationPreference(Base):
     sms_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
     in_app_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
     whatsapp_notifications: Mapped[bool] = mapped_column(Boolean, default=False)
+    push_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
     accident_alerts: Mapped[bool] = mapped_column(Boolean, default=True)
     case_updates: Mapped[bool] = mapped_column(Boolean, default=True)
     document_expiry_reminders: Mapped[bool] = mapped_column(Boolean, default=True)
     insurance_renewal_reminders: Mapped[bool] = mapped_column(Boolean, default=True)
     pending_task_reminders: Mapped[bool] = mapped_column(Boolean, default=True)
+    ai_action_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
+    quiet_hours_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    quiet_hours_start: Mapped[str] = mapped_column(String, default="22:00")
+    quiet_hours_end: Mapped[str] = mapped_column(String, default="07:00")
+    quiet_hours_timezone: Mapped[str] = mapped_column(String, default="Asia/Kolkata")
+    preferred_language: Mapped[str] = mapped_column(String, default="English")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ConsentRecord(Base):
+    __tablename__ = "consent_records"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("consent"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    consent_type: Mapped[str] = mapped_column(String, index=True)  # terms_of_service | privacy_policy | ai_data_processing | medical_information_sharing | emergency_contact_data_sharing | external_document_sharing | notifications | pm_rahat_claim_intake
+    consent_status: Mapped[str] = mapped_column(String, default="granted", index=True)  # granted | revoked | expired
+    policy_version: Mapped[str] = mapped_column(String, default="1.0")
+    consent_source: Mapped[str] = mapped_column(String, default="web_application")
+    ip_address: Mapped[str | None] = mapped_column(String, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String, nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    consent_timestamp: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 def init_db() -> None:

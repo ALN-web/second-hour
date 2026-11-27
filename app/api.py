@@ -29,6 +29,8 @@ from app.services import profile as profile_svc
 from app.services import reports as report_svc
 from app.services import claims as claim_svc
 from app.services import submissions as sub_svc
+from app.services import audit as audit_svc
+from app.services import privacy as privacy_svc
 from app.services.common import PermissionDenied, ServiceError, iso, require_member
 
 app = FastAPI(title="Second Hour agent host")
@@ -1442,6 +1444,13 @@ def list_document_access_logs_endpoint(
 
 class CreateConversationPayload(BaseModel):
     title: str | None = None
+    case_id: str | None = None
+    ai_provider: str = "gemini"
+    model_identifier: str | None = None
+
+
+class RenameConversationPayload(BaseModel):
+    title: str
 
 
 class PinConversationPayload(BaseModel):
@@ -1457,41 +1466,128 @@ class AssistantActionPayload(BaseModel):
     payload: dict = {}
 
 
+class ApproveActionPayload(BaseModel):
+    notes: str = ""
+
+
+class RejectActionPayload(BaseModel):
+    reason: str = ""
+
+
+@app.get("/api/conversations")
 @app.get("/api/ai/conversations")
-def list_ai_conversations(user: User = Depends(current_user), db=Depends(get_db)):
-    return asst_svc.list_conversations(db, user.id)
+def list_ai_conversations(
+    status: str | None = Query(default=None),
+    case_id: str | None = Query(default=None),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return asst_svc.list_conversations(db, user.id, status=status, case_id=case_id)
 
 
+@app.post("/api/conversations")
 @app.post("/api/ai/conversations")
-def create_ai_conversation(body: CreateConversationPayload, user: User = Depends(current_user), db=Depends(get_db)):
-    return asst_svc.create_conversation(db, user.id, body.title)
+def create_ai_conversation(
+    body: CreateConversationPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return asst_svc.create_conversation(
+        db,
+        user.id,
+        title=body.title,
+        case_id=body.case_id,
+        ai_provider=body.ai_provider,
+        model_identifier=body.model_identifier,
+    )
 
 
+@app.get("/api/conversations/{conv_id}")
 @app.get("/api/ai/conversations/{conv_id}")
 def get_ai_conversation(conv_id: str, user: User = Depends(current_user), db=Depends(get_db)):
     return asst_svc.get_conversation(db, user.id, conv_id)
 
 
+@app.patch("/api/conversations/{conv_id}")
+def rename_ai_conversation(
+    conv_id: str,
+    body: RenameConversationPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return asst_svc.rename_conversation(db, user.id, conv_id, body.title)
+
+
+@app.post("/api/conversations/{conv_id}/archive")
+def archive_ai_conversation(conv_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.archive_conversation(db, user.id, conv_id)
+
+
+@app.post("/api/conversations/{conv_id}/unarchive")
+def unarchive_ai_conversation(conv_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.unarchive_conversation(db, user.id, conv_id)
+
+
+@app.delete("/api/conversations/{conv_id}")
 @app.delete("/api/ai/conversations/{conv_id}")
 def delete_ai_conversation(conv_id: str, user: User = Depends(current_user), db=Depends(get_db)):
     asst_svc.delete_conversation(db, user.id, conv_id)
     return {"ok": True}
 
 
+@app.delete("/api/conversations")
 @app.delete("/api/ai/conversations")
 def clear_ai_conversations(user: User = Depends(current_user), db=Depends(get_db)):
     cnt = asst_svc.clear_conversations(db, user.id)
     return {"ok": True, "cleared_count": cnt}
 
 
+@app.patch("/api/conversations/{conv_id}/pin")
 @app.patch("/api/ai/conversations/{conv_id}/pin")
 def pin_ai_conversation(conv_id: str, body: PinConversationPayload, user: User = Depends(current_user), db=Depends(get_db)):
     return asst_svc.pin_conversation(db, user.id, conv_id, body.pinned)
 
 
+@app.post("/api/conversations/{conv_id}/messages")
 @app.post("/api/ai/conversations/{conv_id}/messages")
 def send_ai_message(conv_id: str, body: AssistantMessagePayload, user: User = Depends(current_user), db=Depends(get_db)):
     return asst_svc.post_user_message(db, user.id, conv_id, body.content)
+
+
+@app.get("/api/assistant/actions")
+def list_ai_actions(
+    status: str | None = Query(default=None),
+    case_id: str | None = Query(default=None),
+    conversation_id: str | None = Query(default=None),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return asst_svc.list_ai_actions(db, user.id, status=status, case_id=case_id, conversation_id=conversation_id)
+
+
+@app.get("/api/assistant/actions/{action_id}")
+def get_ai_action_details(action_id: str, user: User = Depends(current_user), db=Depends(get_db)):
+    return asst_svc.get_action_details(db, user.id, action_id)
+
+
+@app.post("/api/assistant/actions/{action_id}/approve")
+def approve_ai_action(
+    action_id: str,
+    body: ApproveActionPayload = ApproveActionPayload(),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return asst_svc.approve_action(db, user.id, action_id, approval_notes=body.notes)
+
+
+@app.post("/api/assistant/actions/{action_id}/reject")
+def reject_ai_action(
+    action_id: str,
+    body: RejectActionPayload = RejectActionPayload(),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return asst_svc.reject_action(db, user.id, action_id, reason=body.reason)
 
 
 @app.post("/api/ai/actions/execute")
@@ -1653,24 +1749,108 @@ def get_identity_docs(user: User = Depends(current_user), db=Depends(get_db)):
     return profile_svc.get_identity_documents(db, user.id)
 
 
+# ------------------------------------------------------------------ Privacy, Notification & Consent Preferences
+
+class GrantConsentPayload(BaseModel):
+    consent_type: str
+    policy_version: str = "v1.0"
+    consent_source: str = "web_profile"
+    metadata: dict = {}
+
+
+class RevokeConsentPayload(BaseModel):
+    reason: str = ""
+
+
 @app.get("/api/profile/privacy")
 def get_privacy(user: User = Depends(current_user), db=Depends(get_db)):
-    return profile_svc.get_privacy_preferences(db, user.id)
+    return privacy_svc.get_privacy_preferences(db, user.id)
 
 
 @app.patch("/api/profile/privacy")
+@app.put("/api/profile/privacy")
 def update_privacy(body: dict, user: User = Depends(current_user), db=Depends(get_db)):
-    return profile_svc.update_privacy_preferences(db, user.id, body)
+    return privacy_svc.update_privacy_preferences(db, user.id, body)
 
 
 @app.get("/api/profile/notifications")
 def get_notifications(user: User = Depends(current_user), db=Depends(get_db)):
-    return profile_svc.get_notification_preferences(db, user.id)
+    return privacy_svc.get_notification_preferences(db, user.id)
 
 
 @app.patch("/api/profile/notifications")
+@app.put("/api/profile/notifications")
 def update_notifications(body: dict, user: User = Depends(current_user), db=Depends(get_db)):
-    return profile_svc.update_notification_preferences(db, user.id, body)
+    return privacy_svc.update_notification_preferences(db, user.id, body)
+
+
+@app.get("/api/profile/consent")
+def list_consents(user: User = Depends(current_user), db=Depends(get_db)):
+    return privacy_svc.list_user_consents(db, user.id)
+
+
+@app.post("/api/profile/consent")
+def grant_consent_endpoint(
+    request: Request,
+    body: GrantConsentPayload,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    return privacy_svc.grant_consent(
+        db=db,
+        user_id=user.id,
+        consent_type=body.consent_type,
+        policy_version=body.policy_version,
+        consent_source=body.consent_source,
+        ip_address=ip,
+        user_agent=ua,
+        metadata=body.metadata,
+    )
+
+
+@app.post("/api/profile/consent/{consent_type}/revoke")
+def revoke_consent_endpoint(
+    consent_type: str,
+    body: RevokeConsentPayload = RevokeConsentPayload(),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return privacy_svc.revoke_consent(db, user.id, consent_type, reason=body.reason)
+
+
+@app.get("/api/profile/consent/{consent_type}/check")
+def check_consent_endpoint(
+    consent_type: str,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    return {"consent_type": consent_type, "has_consent": privacy_svc.has_active_consent(db, user.id, consent_type)}
+
+
+# ------------------------------------------------------------------ Central Audit Logs
+
+@app.get("/api/audit-logs")
+def get_central_audit_logs(
+    case_id: str | None = Query(default=None),
+    actor_id: str | None = Query(default=None),
+    resource_type: str | None = Query(default=None),
+    action_type: str | None = Query(default=None),
+    limit: int = Query(default=50),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    # Only return logs where user is actor or relevant case member, or if queried by user
+    effective_actor = actor_id or user.id
+    return audit_svc.list_audit_logs(
+        db=db,
+        case_id=case_id,
+        actor_id=effective_actor,
+        resource_type=resource_type,
+        action_type=action_type,
+        limit=limit,
+    )
 
 
 @app.get("/api/profile/security")
