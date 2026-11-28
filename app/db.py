@@ -971,6 +971,12 @@ class OtpVerification(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
+    # Delivery tracking fields
+    delivery_status: Mapped[str] = mapped_column(String, default="GENERATED")  # GENERATED | REQUESTED | ACCEPTED | FAILED | EXPIRED | VERIFIED
+    delivery_provider: Mapped[str | None] = mapped_column(String, nullable=True)  # SMTP | RESEND | TWILIO | MSG91 | DEV_SIMULATED
+    delivery_reference_id: Mapped[str | None] = mapped_column(String, nullable=True)  # Provider SID or Request ID
+    delivery_error: Mapped[str | None] = mapped_column(Text, nullable=True)  # Error detail if rejected
+
 
 class DigiLockerOAuthState(Base):
     """Stores ephemeral OAuth 2.0 PKCE states and encrypted verifiers bound to user sessions."""
@@ -1013,6 +1019,24 @@ def init_db() -> None:
     """Initialize database schema safely, reporting diagnostic details if unavailable."""
     try:
         Base.metadata.create_all(engine)
+        # Apply non-destructive column migrations for existing tables
+        with engine.begin() as conn:
+            if engine.dialect.name == "postgresql":
+                conn.execute(text("ALTER TABLE otp_verifications ADD COLUMN IF NOT EXISTS delivery_status VARCHAR(32) NOT NULL DEFAULT 'GENERATED'"))
+                conn.execute(text("ALTER TABLE otp_verifications ADD COLUMN IF NOT EXISTS delivery_provider VARCHAR(32)"))
+                conn.execute(text("ALTER TABLE otp_verifications ADD COLUMN IF NOT EXISTS delivery_reference_id VARCHAR(128)"))
+                conn.execute(text("ALTER TABLE otp_verifications ADD COLUMN IF NOT EXISTS delivery_error TEXT"))
+            elif engine.dialect.name == "sqlite":
+                res = conn.execute(text("PRAGMA table_info(otp_verifications)")).fetchall()
+                cols = {r[1] for r in res}
+                if cols and "delivery_status" not in cols:
+                    conn.execute(text("ALTER TABLE otp_verifications ADD COLUMN delivery_status VARCHAR(32) NOT NULL DEFAULT 'GENERATED'"))
+                if cols and "delivery_provider" not in cols:
+                    conn.execute(text("ALTER TABLE otp_verifications ADD COLUMN delivery_provider VARCHAR(32)"))
+                if cols and "delivery_reference_id" not in cols:
+                    conn.execute(text("ALTER TABLE otp_verifications ADD COLUMN delivery_reference_id VARCHAR(128)"))
+                if cols and "delivery_error" not in cols:
+                    conn.execute(text("ALTER TABLE otp_verifications ADD COLUMN delivery_error TEXT"))
         logger.info("Database schema initialized successfully (dialect: %s)", engine.dialect.name)
     except Exception as exc:
         logger.error("Failed to initialize database schema: %s", exc)
