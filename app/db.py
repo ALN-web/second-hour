@@ -972,6 +972,43 @@ class OtpVerification(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class DigiLockerOAuthState(Base):
+    """Stores ephemeral OAuth 2.0 PKCE states and encrypted verifiers bound to user sessions."""
+    __tablename__ = "digilocker_oauth_states"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("dstate"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    state: Mapped[str] = mapped_column(String, unique=True, index=True)
+    encrypted_code_verifier: Mapped[str] = mapped_column(Text)
+    code_challenge: Mapped[str] = mapped_column(String)
+    code_challenge_method: Mapped[str] = mapped_column(String, default="S256")
+    redirect_uri: Mapped[str] = mapped_column(String)
+    doc_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_consumed: Mapped[bool] = mapped_column(Boolean, default=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class UserDigiLockerConnection(Base):
+    """Stores encrypted OAuth 2.0 access and refresh tokens per user for authorized DigiLocker access."""
+    __tablename__ = "user_digilocker_connections"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("dconn"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    digilocker_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    encrypted_access_token: Mapped[str] = mapped_column(Text)
+    encrypted_refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    token_scope: Mapped[str | None] = mapped_column(String, nullable=True)
+    token_type: Mapped[str] = mapped_column(String, default="Bearer")
+    access_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    refresh_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    connection_status: Mapped[str] = mapped_column(String, default="connected")  # connected | disconnected | expired | revoked
+    connected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    disconnected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 def init_db() -> None:
     """Initialize database schema safely, reporting diagnostic details if unavailable."""
     try:

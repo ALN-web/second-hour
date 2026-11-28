@@ -47,6 +47,14 @@ if not OTP_HMAC_SECRET:
     # In local dev only, provide a fallback secret if unset
     OTP_HMAC_SECRET = "dev-insecure-otp-hmac-secret-local-only-do-not-use-in-prod"
 
+# Server-managed authenticated encryption key for OAuth tokens and verifiers
+TOKEN_ENCRYPTION_KEY = os.getenv("TOKEN_ENCRYPTION_KEY", "").strip()
+if not TOKEN_ENCRYPTION_KEY:
+    if ENVIRONMENT in ("production", "staging", "prod", "stage"):
+        raise RuntimeError(f"FATAL SECURITY CONFIGURATION: TOKEN_ENCRYPTION_KEY must be configured in {ENVIRONMENT} environment!")
+    # In local dev only, provide a deterministic fallback Fernet key
+    TOKEN_ENCRYPTION_KEY = "dev-insecure-token-encryption-key-local-only-do-not-use-in-prod-32b="
+
 # Institutional verification provider execution mode: MOCK | SANDBOX | PRODUCTION (default: MOCK)
 raw_provider_mode = os.getenv("VERIFICATION_PROVIDER_MODE", "MOCK").strip().upper()
 if raw_provider_mode in ("MOCK", "SANDBOX", "PRODUCTION"):
@@ -58,6 +66,11 @@ else:
 DIGILOCKER_CLIENT_ID = os.getenv("DIGILOCKER_CLIENT_ID", "").strip()
 DIGILOCKER_CLIENT_SECRET = os.getenv("DIGILOCKER_CLIENT_SECRET", "").strip()
 DIGILOCKER_API_BASE = os.getenv("DIGILOCKER_API_BASE", "https://digilocker.meripehchaan.gov.in/public/oauth2/1").strip()
+DIGILOCKER_AUTH_URL = os.getenv("DIGILOCKER_AUTH_URL", f"{DIGILOCKER_API_BASE}/authorize").strip()
+DIGILOCKER_TOKEN_URL = os.getenv("DIGILOCKER_TOKEN_URL", f"{DIGILOCKER_API_BASE}/token").strip()
+DIGILOCKER_REVOKE_URL = os.getenv("DIGILOCKER_REVOKE_URL", f"{DIGILOCKER_API_BASE}/revoke").strip()
+DIGILOCKER_REDIRECT_URI = os.getenv("DIGILOCKER_REDIRECT_URI", "http://localhost:8000/api/verify/digilocker/callback").strip()
+DIGILOCKER_SCOPES = os.getenv("DIGILOCKER_SCOPES", "read").strip()
 
 VAHAN_API_KEY = os.getenv("VAHAN_API_KEY", "").strip()
 VAHAN_API_URL = os.getenv("VAHAN_API_URL", "https://api.parivahan.gov.in/vahan4").strip()

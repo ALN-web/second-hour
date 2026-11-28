@@ -1892,6 +1892,13 @@ class DigiLockerInitiatePayload(BaseModel):
     redirect_uri: str = "http://localhost:5173/profile"
 
 
+class DigiLockerCallbackPayload(BaseModel):
+    state: str
+    code: str | None = None
+    error: str | None = None
+    error_description: str | None = None
+
+
 class DigiLockerVerifyPayload(BaseModel):
     document_id: str
     consent_record_id: str | None = None
@@ -1947,9 +1954,90 @@ def get_verification_history_endpoint(
 @app.post("/api/verify/digilocker/initiate")
 def digilocker_initiate_endpoint(
     body: DigiLockerInitiatePayload,
+    request: Request,
     user: User = Depends(current_user),
+    db=Depends(get_db),
 ):
-    return verify_svc.DigiLockerAdapter.initiate_authorization(user.id, body.doc_type, body.redirect_uri)
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    from app.services import digilocker_oauth
+    return digilocker_oauth.initiate_oauth_flow(
+        db, user.id, redirect_uri=body.redirect_uri, doc_type=body.doc_type, ip_address=ip, user_agent=ua
+    )
+
+
+@app.post("/api/verify/digilocker/callback")
+def digilocker_callback_post(
+    body: DigiLockerCallbackPayload,
+    request: Request,
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    from app.services import digilocker_oauth
+    return digilocker_oauth.handle_oauth_callback(
+        db,
+        authenticated_user_id=user.id,
+        state=body.state,
+        code=body.code,
+        error=body.error,
+        error_description=body.error_description,
+        ip_address=ip,
+        user_agent=ua,
+    )
+
+
+@app.get("/api/verify/digilocker/callback")
+def digilocker_callback_get(
+    request: Request,
+    state: str = Query(...),
+    code: str | None = Query(None),
+    error: str | None = Query(None),
+    error_description: str | None = Query(None),
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    from app.services import digilocker_oauth
+    return digilocker_oauth.handle_oauth_callback(
+        db,
+        authenticated_user_id=user.id,
+        state=state,
+        code=code,
+        error=error,
+        error_description=error_description,
+        ip_address=ip,
+        user_agent=ua,
+    )
+
+
+@app.get("/api/verify/digilocker/status")
+def digilocker_status_endpoint(
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    from app.services import digilocker_oauth
+    return digilocker_oauth.get_connection_status(db, user.id)
+
+
+@app.post("/api/verify/digilocker/disconnect")
+def digilocker_disconnect_endpoint(
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    from app.services import digilocker_oauth
+    return digilocker_oauth.disconnect_connection(db, user.id)
+
+
+@app.post("/api/verify/digilocker/refresh")
+def digilocker_refresh_endpoint(
+    user: User = Depends(current_user),
+    db=Depends(get_db),
+):
+    from app.services import digilocker_oauth
+    return digilocker_oauth.refresh_digilocker_token(db, user.id)
 
 
 @app.post("/api/verify/digilocker/verify-doc")

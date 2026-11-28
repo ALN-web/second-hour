@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { IdentityDocItem } from './types'
 import { api } from '../api'
 
@@ -8,6 +8,15 @@ interface IdentityDocumentsSectionProps {
   onRefresh?: () => void
 }
 
+interface DigiLockerConnectionStatus {
+  is_connected: boolean
+  connection_status: string
+  digilocker_id_masked: string | null
+  connected_at: string | null
+  expires_at: string | null
+  is_expired: boolean
+}
+
 export function IdentityDocumentsSection({
   documents,
   onNavigateToDocuments,
@@ -15,6 +24,89 @@ export function IdentityDocumentsSection({
 }: IdentityDocumentsSectionProps) {
   const [verifyingId, setVerifyingId] = useState<string | null>(null)
   const [actionNotice, setActionNotice] = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
+  const [dlStatus, setDlStatus] = useState<DigiLockerConnectionStatus | null>(null)
+  const [isConnecting, setIsConnecting] = useState(false)
+  const [isDisconnecting, setIsDisconnecting] = useState(false)
+
+  const fetchDigiLockerStatus = async () => {
+    try {
+      const res = await api('/api/verify/digilocker/status')
+      setDlStatus(res)
+    } catch {
+      // Non-blocking status lookup
+    }
+  }
+
+  useEffect(() => {
+    fetchDigiLockerStatus()
+  }, [])
+
+  const handleConnectDigiLocker = async () => {
+    try {
+      setIsConnecting(true)
+      setActionNotice(null)
+      const res = await api('/api/verify/digilocker/initiate', {
+        method: 'POST',
+        body: {
+          redirect_uri: window.location.origin + '/profile',
+          doc_type: 'driving_licence',
+        },
+      })
+      if (res.auth_url) {
+        // If simulation/mock or live, initiate authorization flow
+        // In dev/mock mode, automatically exchange state to complete local workflow
+        try {
+          const callbackRes = await api('/api/verify/digilocker/callback', {
+            method: 'POST',
+            body: {
+              state: res.state,
+              code: 'simulated_oauth_code_success',
+            },
+          })
+          if (callbackRes.status === 'connected') {
+            setActionNotice({
+              type: 'success',
+              msg: 'DigiLocker account connected successfully.',
+            })
+            fetchDigiLockerStatus()
+            if (onRefresh) onRefresh()
+            return
+          }
+        } catch {
+          // If automatic callback exchange not supported (e.g. strict production), redirect to provider auth URL
+          window.location.href = res.auth_url
+        }
+      }
+    } catch (err: any) {
+      setActionNotice({
+        type: 'error',
+        msg: err?.message || 'Failed to initiate DigiLocker authorization.',
+      })
+    } finally {
+      setIsConnecting(false)
+    }
+  }
+
+  const handleDisconnectDigiLocker = async () => {
+    try {
+      setIsDisconnecting(true)
+      setActionNotice(null)
+      await api('/api/verify/digilocker/disconnect', { method: 'POST' })
+      setActionNotice({
+        type: 'success',
+        msg: 'DigiLocker account disconnected successfully.',
+      })
+      fetchDigiLockerStatus()
+      if (onRefresh) onRefresh()
+    } catch (err: any) {
+      setActionNotice({
+        type: 'error',
+        msg: err?.message || 'Failed to disconnect DigiLocker account.',
+      })
+    } finally {
+      setIsDisconnecting(false)
+    }
+  }
 
   const handleVerifyDigiLocker = async (doc: IdentityDocItem) => {
     try {
@@ -119,13 +211,77 @@ export function IdentityDocumentsSection({
         </div>
       )}
 
+      {/* DigiLocker OAuth Connection Card */}
+      <div className="m-5 sm:m-6 p-4 rounded-xl border border-indigo-100 bg-gradient-to-r from-indigo-50/50 to-white flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-sm mt-0.5">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-slate-900">DigiLocker Institutional Gateway</span>
+              {dlStatus?.is_connected ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                  CONNECTED
+                </span>
+              ) : dlStatus?.is_expired ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                  EXPIRED
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                  NOT CONNECTED
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-slate-600 mt-1 max-w-xl leading-relaxed">
+              {dlStatus?.is_connected
+                ? `Account connected securely (ID: ${dlStatus.digilocker_id_masked || 'Registered'}). Authorizes official Driving Licence and identity verification.`
+                : 'Connect your DigiLocker account with OAuth 2.0 PKCE to enable official verification of Driving Licences and identity credentials.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="shrink-0 flex items-center gap-2 self-end sm:self-center">
+          {dlStatus?.is_connected ? (
+            <button
+              onClick={handleDisconnectDigiLocker}
+              disabled={isDisconnecting}
+              className="px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-xl transition cursor-pointer disabled:opacity-50"
+            >
+              {isDisconnecting ? 'Disconnecting...' : 'Disconnect'}
+            </button>
+          ) : (
+            <button
+              onClick={handleConnectDigiLocker}
+              disabled={isConnecting}
+              className="px-3.5 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition shadow-sm cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+            >
+              {isConnecting ? (
+                <span>Connecting...</span>
+              ) : (
+                <>
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                  </svg>
+                  <span>Connect DigiLocker</span>
+                </>
+              )}
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Security & Privacy Notice */}
-      <div className="m-5 sm:m-6 p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 flex items-start gap-2.5">
+      <div className="m-5 sm:m-6 mt-0 p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 flex items-start gap-2.5">
         <svg className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
         </svg>
         <p className="leading-relaxed">
-          <strong>Privacy Safeguard:</strong> Identity document files are preserved in the centralized Document Wallet with encryption. Masked identifiers protect sensitive numbers against unnecessary exposure. Documents require authorized institutional verification.
+          <strong>Privacy Safeguard:</strong> Identity document files are preserved in the centralized Document Wallet with encryption. Masked identifiers protect sensitive numbers against unnecessary exposure. Connecting DigiLocker permits verification but does not automatically mark documents as verified without specific registry checks.
         </p>
       </div>
 
@@ -221,3 +377,4 @@ export function IdentityDocumentsSection({
     </div>
   )
 }
+
