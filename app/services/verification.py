@@ -106,67 +106,140 @@ def _mask_identifier(val: str | None, visible_start: int = 2, visible_end: int =
 
 
 # ==============================================================================
-# 1. Email & Mobile OTP Verification Subsystem
+# 1. Email & Mobile OTP Verification Subsystem (Keyed HMAC & Strict Binding)
 # ==============================================================================
+
+def compute_otp_hmac(
+    code: str,
+    salt: str,
+    user_id: str,
+    channel: str,
+    purpose: str,
+    secret: str | None = None,
+) -> str:
+    """Compute keyed HMAC-SHA256 for OTP verification.
+    
+    Binds the secret, salt, code, user_id, channel, and purpose cryptographically.
+    Fails securely if the secret is missing outside local development.
+    """
+    hmac_secret = secret if secret is not None else getattr(config, "OTP_HMAC_SECRET", "")
+    if not hmac_secret:
+        raise ServiceError("Server configuration error: OTP_HMAC_SECRET is missing or empty.")
+    
+    key = hmac_secret.encode("utf-8")
+    msg = f"{salt}:{code}:{user_id}:{channel}:{purpose}".encode("utf-8")
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()
+
 
 def request_otp(
     db: Session,
     user_id: str,
     channel: str,
     target: str | None = None,
+    purpose: str | None = None,
     ip_address: str | None = None,
     user_agent: str | None = None,
 ) -> dict[str, Any]:
-    """Generate, hash, and dispatch a 6-digit verification code.
+    """Generate, hash via keyed HMAC-SHA256, and dispatch a 6-digit verification code.
 
     Guarantees:
     - Never stores plaintext OTP in database.
-    - Uses cryptographic random generator and salted SHA-256.
-    - Enforces 60-second resend cooldown.
+    - Uses cryptographic random generator and keyed HMAC-SHA256.
+    - Strictly binds OTP to authenticated user ID, channel, contact, and purpose.
+    - Enforces 60-second resend cooldown with PostgreSQL row-level locking.
     - Limits lifetime to 10 minutes.
     - Records attempt in verification_records and audit_log.
     """
-    user = db.get(User, user_id)
-    if not user:
-        raise ServiceError("User not found")
-
     channel_clean = channel.lower().strip()
     if channel_clean not in ("email", "phone"):
         raise ServiceError("Channel must be 'email' or 'phone'")
 
-    dest = (target or (user.email if channel_clean == "email" else user.phone) or "").strip()
-    if not dest:
-        raise ServiceError(f"No {channel_clean} address recorded on profile to verify.")
+    default_purpose = "email_verify" if channel_clean == "email" else "phone_verify"
+    purpose_clean = (purpose or default_purpose).lower().strip()
+    if purpose_clean not in ("email_verify", "phone_verify", "step_up", "email_change", "phone_change"):
+        raise ServiceError(f"Unsupported verification purpose: '{purpose_clean}'. Must be email_verify, phone_verify, or step_up.")
 
-    # 1. Enforce resend cooldown
+    # Purpose and channel compatibility
+    if purpose_clean in ("email_verify", "email_change") and channel_clean != "email":
+        raise ServiceError("Channel and purpose mismatch: 'phone' channel cannot be used for email verification.")
+    if purpose_clean in ("phone_verify", "phone_change") and channel_clean != "phone":
+        raise ServiceError("Channel and purpose mismatch: 'email' channel cannot be used for phone verification.")
+
+    # Row-level locking on User to serialize concurrent OTP requests for this user
+    user = db.scalars(
+        select(User).where(User.id == user_id).with_for_update()
+    ).first()
+    if not user:
+        raise ServiceError("User not found")
+
+    # Strict target binding to account contacts or pending change
+    if channel_clean == "email":
+        expected_contact = (user.pending_email or user.email or "").strip()
+        if not expected_contact:
+            raise ServiceError("No registered or pending email address found on profile to verify.")
+        if target:
+            clean_target = str(target).strip()
+            if clean_target.lower() != expected_contact.lower():
+                raise ServiceError(f"Target '{clean_target}' does not match registered account email or pending email change.")
+            dest = clean_target
+        else:
+            dest = expected_contact
+    else:  # phone
+        expected_contact = (user.pending_phone or user.phone or "").strip()
+        if not expected_contact:
+            raise ServiceError("No registered or pending mobile number found on profile to verify.")
+        if target:
+            clean_target = str(target).strip()
+            norm_target = re.sub(r"[^\d+]", "", clean_target)
+            norm_expected = re.sub(r"[^\d+]", "", expected_contact)
+            if norm_target != norm_expected:
+                raise ServiceError(f"Target '{clean_target}' does not match registered account phone or pending phone change.")
+            dest = clean_target
+        else:
+            dest = expected_contact
+
+    if purpose_clean == "step_up":
+        if channel_clean == "email" and not user.email_verified:
+            raise ServiceError("User email must be verified prior to performing step-up verification.")
+        if channel_clean == "phone" and not user.phone_verified:
+            raise ServiceError("User phone must be verified prior to performing step-up verification.")
+
+    # 1. Enforce resend cooldown with row locking
     cutoff_cooldown = utcnow() - timedelta(seconds=OTP_RESEND_COOLDOWN_SECONDS)
     recent_active = db.scalars(
         select(OtpVerification).where(
             OtpVerification.user_id == user_id,
             OtpVerification.channel == channel_clean,
+            OtpVerification.purpose == purpose_clean,
             OtpVerification.created_at >= cutoff_cooldown,
-        )
+        ).with_for_update()
     ).first()
     if recent_active:
         wait_seconds = int((_normalize_dt(recent_active.created_at) + timedelta(seconds=OTP_RESEND_COOLDOWN_SECONDS) - _normalize_dt(utcnow())).total_seconds())
         if wait_seconds > 0:
             raise ServiceError(f"Please wait {wait_seconds} seconds before requesting another verification code.")
 
-    # Invalidate previous unused codes for this channel
+    # Invalidate previous unused codes for this (user_id, channel, purpose)
     for prior in db.scalars(
         select(OtpVerification).where(
             OtpVerification.user_id == user_id,
             OtpVerification.channel == channel_clean,
+            OtpVerification.purpose == purpose_clean,
             OtpVerification.is_used.is_(False),
-        )
+        ).with_for_update()
     ).all():
         prior.is_used = True
 
-    # 2. Cryptographic code & salt generation
-    # 6-digit random code (100000 - 999999)
-    raw_code = str(secrets.SystemRandom().randint(100000, 999999))
+    # 2. Cryptographic code & salt generation with Keyed HMAC-SHA256
+    raw_code = "123456" if config.DEMO_MODE else str(secrets.SystemRandom().randint(100000, 999999))
     salt = secrets.token_hex(16)
-    otp_hash = hashlib.sha256((salt + raw_code).encode("utf-8")).hexdigest()
+    otp_hash = compute_otp_hmac(
+        code=raw_code,
+        salt=salt,
+        user_id=user_id,
+        channel=channel_clean,
+        purpose=purpose_clean,
+    )
 
     expires_at = utcnow() + timedelta(minutes=OTP_VALIDITY_MINUTES)
 
@@ -174,6 +247,7 @@ def request_otp(
         id=new_id("otp"),
         user_id=user_id,
         channel=channel_clean,
+        purpose=purpose_clean,
         target=dest,
         otp_hash=otp_hash,
         salt=salt,
@@ -197,7 +271,7 @@ def request_otp(
         verification_reference_id=f"OTP-{otp_record.id}",
         retry_count=0,
         expires_at=expires_at,
-        verified_metadata={"target_masked": _mask_identifier(dest), "channel": channel_clean},
+        verified_metadata={"target_masked": _mask_identifier(dest), "channel": channel_clean, "purpose": purpose_clean},
         ip_address=ip_address,
         user_agent=user_agent,
     )
@@ -210,22 +284,23 @@ def request_otp(
         action_type=f"request_{channel_clean}_otp",
         resource_type="user",
         resource_id=user_id,
-        result_summary=f"Dispatched {channel_clean.upper()} OTP to {_mask_identifier(dest)}",
-        metadata={"channel": channel_clean, "otp_id": otp_record.id},
+        result_summary=f"Dispatched {channel_clean.upper()} OTP ({purpose_clean}) to {_mask_identifier(dest)}",
+        metadata={"channel": channel_clean, "purpose": purpose_clean, "otp_id": otp_record.id},
     )
     db.commit()
 
-    # In DEMO_MODE, expose demo_code for automated tests and interactive UI demo
-    # Note: Plaintext OTP is NEVER stored in database, only provided ephemeral in response.
     resp: dict[str, Any] = {
         "status": "otp_sent",
         "channel": channel_clean,
+        "purpose": purpose_clean,
         "target": _mask_identifier(dest),
         "expires_in_seconds": OTP_VALIDITY_MINUTES * 60,
         "message": f"Verification passcode dispatched to {_mask_identifier(dest)}.",
     }
+    # Demo code is ONLY returned if DEMO_MODE is explicitly enabled (never in production)
     if config.DEMO_MODE:
         resp["demo_code"] = raw_code
+        resp["message"] = f"Verification passcode: {raw_code} dispatched to {_mask_identifier(dest)}."
         logger.info("[DEMO_MODE] Generated OTP for user %s: %s", user_id, raw_code)
 
     return resp
@@ -236,33 +311,36 @@ def confirm_otp(
     user_id: str,
     channel: str,
     otp_code: str,
+    purpose: str | None = None,
     ip_address: str | None = None,
     user_agent: str | None = None,
 ) -> dict[str, Any]:
-    """Validate 6-digit verification code using constant-time hash comparison."""
-    user = db.get(User, user_id)
-    if not user:
-        raise ServiceError("User not found")
-
+    """Validate 6-digit verification code using constant-time keyed HMAC-SHA256 comparison."""
     channel_clean = channel.lower().strip()
     if channel_clean not in ("email", "phone"):
         raise ServiceError("Channel must be 'email' or 'phone'")
+
+    default_purpose = "email_verify" if channel_clean == "email" else "phone_verify"
+    purpose_clean = (purpose or default_purpose).lower().strip()
+    if purpose_clean not in ("email_verify", "phone_verify", "step_up", "email_change", "phone_change"):
+        raise ServiceError(f"Unsupported verification purpose: '{purpose_clean}'.")
 
     clean_code = str(otp_code or "").strip()
     if not clean_code or not clean_code.isdigit() or len(clean_code) != 6:
         raise ServiceError("Verification code must be exactly 6 numeric digits.")
 
-    # Find latest active OTP record
+    # Concurrency protection: row-level lock on the active OtpVerification row
     record = db.scalars(
         select(OtpVerification).where(
             OtpVerification.user_id == user_id,
             OtpVerification.channel == channel_clean,
+            OtpVerification.purpose == purpose_clean,
             OtpVerification.is_used.is_(False),
-        ).order_by(OtpVerification.created_at.desc())
+        ).order_by(OtpVerification.created_at.desc()).with_for_update()
     ).first()
 
     if not record:
-        raise ServiceError("No active verification code found. Please request a new one.")
+        raise ServiceError(f"No active verification code found for {channel_clean} ({purpose_clean}). Please request a new one.")
 
     if _normalize_dt(record.expires_at) < _normalize_dt(utcnow()):
         record.is_used = True
@@ -274,34 +352,54 @@ def confirm_otp(
         db.commit()
         raise ServiceError("Maximum verification attempts exceeded. Please request a new code.")
 
-    # Increment attempt count
+    # Increment attempt count atomically
     record.attempts += 1
 
-    # Constant-time comparison of salted hash
-    expected_hash = hashlib.sha256((record.salt + clean_code).encode("utf-8")).hexdigest()
+    # Constant-time comparison of keyed HMAC-SHA256 hash
+    expected_hash = compute_otp_hmac(
+        code=clean_code,
+        salt=record.salt,
+        user_id=record.user_id,
+        channel=record.channel,
+        purpose=record.purpose,
+    )
     is_valid = hmac.compare_digest(expected_hash, record.otp_hash)
 
-    # In DEMO_MODE, also allow fallback demo code "123456" for backward compatibility
+    # In DEMO_MODE, strictly permitted ONLY if config.DEMO_MODE is True
     if not is_valid and config.DEMO_MODE and clean_code == "123456":
         is_valid = True
 
     if not is_valid:
         remaining = record.max_attempts - record.attempts
-        db.commit()
         if remaining <= 0:
             record.is_used = True
             db.commit()
             raise ServiceError("Maximum verification attempts exceeded. Code invalidated.")
+        db.commit()
         raise ServiceError(f"Invalid verification code. {remaining} attempt(s) remaining.")
 
-    # Mark code as used
+    # Code is valid - mark as used immediately to prevent replay
     record.is_used = True
 
-    # Update user verification status
-    if channel_clean == "email":
+    # Lock user row to apply verified status or pending contact change
+    user = db.scalars(select(User).where(User.id == user_id).with_for_update()).first()
+    if not user:
+        raise ServiceError("User not found")
+
+    if purpose_clean in ("email_verify", "email_change"):
+        if user.pending_email:
+            user.email = user.pending_email
+            user.pending_email = None
         user.email_verified = True
-    else:
+    elif purpose_clean in ("phone_verify", "phone_change"):
+        if user.pending_phone:
+            user.phone = user.pending_phone
+            user.pending_phone = None
         user.phone_verified = True
+    elif purpose_clean == "step_up":
+        # Step-up verification succeeded; contact details remain as-is
+        pass
+
     user.updated_at = utcnow()
 
     # Update latest verification_record to VERIFIED
@@ -310,7 +408,7 @@ def confirm_otp(
             VerificationRecord.user_id == user_id,
             VerificationRecord.entity_type == ("USER_EMAIL" if channel_clean == "email" else "USER_PHONE"),
             VerificationRecord.status == "PENDING",
-        ).order_by(VerificationRecord.created_at.desc())
+        ).order_by(VerificationRecord.created_at.desc()).with_for_update()
     ).first()
 
     if vrec:
@@ -325,16 +423,17 @@ def confirm_otp(
         action_type=f"verify_{channel_clean}_success",
         resource_type="user",
         resource_id=user_id,
-        result_summary=f"Successfully verified {channel_clean.upper()} ({_mask_identifier(record.target)})",
-        metadata={"channel": channel_clean, "target_masked": _mask_identifier(record.target)},
+        result_summary=f"Successfully verified {channel_clean.upper()} ({purpose_clean}: {_mask_identifier(record.target)})",
+        metadata={"channel": channel_clean, "purpose": purpose_clean, "target_masked": _mask_identifier(record.target)},
     )
     db.commit()
 
     return {
         "status": "verified",
         "channel": channel_clean,
+        "purpose": purpose_clean,
         "verified_target": _mask_identifier(record.target),
-        "message": f"Your {channel_clean} has been successfully verified.",
+        "message": f"Your {channel_clean} has been successfully verified for {purpose_clean}.",
         "verified_at": iso(utcnow()),
     }
 
