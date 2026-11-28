@@ -12,6 +12,7 @@ Tests:
 import pytest
 from sqlalchemy import select
 
+from app import config
 from app.db import (
     CentralDocument,
     ConsentRecord,
@@ -51,8 +52,11 @@ def test_user(db):
 # ==============================================================================
 
 def test_otp_request_and_salted_hash_storage(db, test_user):
-    """Verify OTP generation stores only salted SHA-256 hashes, not plaintext."""
-    res = verify_svc.request_otp(db, test_user.id, channel="email", target="priya.test@example.com")
+    """Verify OTP generation stores only keyed HMAC-SHA256 hashes, not plaintext."""
+    db.query(OtpVerification).filter(OtpVerification.user_id == test_user.id, OtpVerification.channel == "email").delete()
+    db.commit()
+
+    res = verify_svc.request_otp(db, test_user.id, channel="email", target=test_user.email)
     assert res["status"] == "otp_sent"
     assert res["channel"] == "email"
     assert "target" in res
@@ -69,22 +73,31 @@ def test_otp_request_and_salted_hash_storage(db, test_user):
     assert otp_record is not None
     assert len(otp_record.otp_hash) == 64  # SHA-256 hex digest
     assert len(otp_record.salt) == 32      # 16-byte hex salt
+    assert otp_record.purpose == "email_verify"
     # Plaintext code must NOT be stored in any column
     assert not hasattr(otp_record, "code")
 
 
 def test_otp_confirm_success(db, test_user):
     """Verify correct OTP confirms identity and updates user verification status."""
-    res = verify_svc.request_otp(db, test_user.id, channel="phone", target="+919845012345")
-    code = res.get("demo_code", "123456")
+    db.query(OtpVerification).filter(OtpVerification.user_id == test_user.id, OtpVerification.channel == "phone").delete()
+    db.commit()
 
-    confirm_res = verify_svc.confirm_otp(db, test_user.id, channel="phone", otp_code=code)
-    assert confirm_res["status"] == "verified"
-    assert confirm_res["channel"] == "phone"
+    prev_demo = config.DEMO_MODE
+    config.DEMO_MODE = True
+    try:
+        res = verify_svc.request_otp(db, test_user.id, channel="phone", target=test_user.phone)
+        code = res.get("demo_code", "123456")
 
-    # Refresh user
-    user = db.get(User, test_user.id)
-    assert user.phone_verified is True
+        confirm_res = verify_svc.confirm_otp(db, test_user.id, channel="phone", otp_code=code)
+        assert confirm_res["status"] == "verified"
+        assert confirm_res["channel"] == "phone"
+
+        # Refresh user
+        user = db.get(User, test_user.id)
+        assert user.phone_verified is True
+    finally:
+        config.DEMO_MODE = prev_demo
 
 
 def test_otp_invalid_code_retry_and_lockout(db, test_user):
@@ -96,7 +109,7 @@ def test_otp_invalid_code_retry_and_lockout(db, test_user):
     ).delete()
     db.commit()
 
-    verify_svc.request_otp(db, test_user.id, channel="email", target="priya.lockout@example.com")
+    verify_svc.request_otp(db, test_user.id, channel="email", target=test_user.email)
 
     # 4 invalid attempts should report remaining attempts
     for i in range(4):
