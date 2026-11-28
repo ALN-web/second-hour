@@ -318,6 +318,7 @@ export function ProfileDashboard({
             <IdentityDocumentsSection
               documents={identityDocs}
               onNavigateToDocuments={onNavigateToDocuments}
+              onRefresh={loadAllData}
             />
           )}
 

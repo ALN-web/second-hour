@@ -78,6 +78,10 @@ export interface IdentityDocItem {
   document_type: string
   masked_number: string
   verification_status: string
+  verification_provider?: string | null
+  verified_at?: string | null
+  verification_reference_id?: string | null
+  failure_reason?: string | null
   issuing_authority: string
   expiry_date?: string | null
   file_name: string

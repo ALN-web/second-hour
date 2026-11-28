@@ -136,8 +136,10 @@ def get_profile(db: Session, user_id: str) -> dict[str, Any]:
         "role_label": user.role_label,
         "email": user.email or "",
         "email_verified": user.email_verified,
+        "pending_email": getattr(user, "pending_email", None),
         "phone": user.phone or "",
         "phone_verified": user.phone_verified,
+        "pending_phone": getattr(user, "pending_phone", None),
         "date_of_birth": user.date_of_birth,
         "gender": user.gender,
         "profile_photo": user.profile_photo,
@@ -179,20 +181,31 @@ def update_personal_info(db: Session, user_id: str, data: dict[str, Any]) -> dic
     if "profile_photo" in data:
         user.profile_photo = data["profile_photo"]
 
-    # Security requirement: changing phone or email resets verified flag!
+    # Safe pending-contact-change workflow:
+    # Do not silently replace existing verified contact details!
     if "phone" in data:
-        new_phone = str(data["phone"]).strip()
+        new_phone = str(data["phone"]).strip() if data["phone"] else ""
         if new_phone != (user.phone or ""):
-            user.phone = new_phone
-            user.phone_verified = False  # Requires fresh OTP verification
-            _audit(db, user_id, "update_phone", f"Updated mobile number to {new_phone} (pending verification)")
+            if data.get("preserve_existing_until_verified"):
+                user.pending_phone = new_phone
+                _audit(db, user_id, "request_phone_change", f"Initiated mobile change to {new_phone} (pending OTP verification)")
+            else:
+                user.phone = new_phone
+                user.phone_verified = False  # Explicit reset of verified status
+                user.pending_phone = new_phone
+                _audit(db, user_id, "update_phone", f"Updated mobile number to {new_phone} (pending verification)")
 
     if "email" in data:
-        new_email = str(data["email"]).strip()
-        if new_email != (user.email or ""):
-            user.email = new_email
-            user.email_verified = False  # Requires fresh OTP verification
-            _audit(db, user_id, "update_email", f"Updated email address to {new_email} (pending verification)")
+        new_email = str(data["email"]).strip() if data["email"] else ""
+        if new_email.lower() != (user.email or "").lower():
+            if data.get("preserve_existing_until_verified"):
+                user.pending_email = new_email
+                _audit(db, user_id, "request_email_change", f"Initiated email change to {new_email} (pending OTP verification)")
+            else:
+                user.email = new_email
+                user.email_verified = False  # Explicit reset of verified status
+                user.pending_email = new_email
+                _audit(db, user_id, "update_email", f"Updated email address to {new_email} (pending verification)")
 
     user.updated_at = utcnow()
     db.commit()
@@ -205,57 +218,34 @@ def update_personal_info(db: Session, user_id: str, data: dict[str, Any]) -> dic
 # Verification Workflow (OTP)
 # ==============================================================================
 
-def request_verification_otp(db: Session, user_id: str, channel: str) -> dict[str, Any]:
-    """Initiate OTP verification for email or mobile."""
-    user = db.get(User, user_id)
-    if not user:
-        raise ServiceError("User not found")
-
-    target = user.email if channel == "email" else user.phone
-    if not target:
-        raise ServiceError(f"No {channel} recorded on your profile to verify.")
-
-    # In demo environment, OTP 123456 is generated
-    demo_otp = "123456"
-    _audit(db, user_id, f"request_{channel}_otp", f"Verification OTP requested for {channel}: {target}")
-
-    return {
-        "status": "otp_sent",
-        "channel": channel,
-        "target": target,
-        "message": f"Verification code sent to {target}. (Demo OTP: {demo_otp})",
-        "demo_code": demo_otp,
-    }
+def request_verification_otp(
+    db: Session,
+    user_id: str,
+    channel: str,
+    purpose: str | None = None,
+    target: str | None = None,
+) -> dict[str, Any]:
+    """Initiate cryptographic OTP verification for email or mobile."""
+    from app.services import verification as verify_svc
+    return verify_svc.request_otp(db, user_id, channel, target=target, purpose=purpose)
 
 
-def confirm_verification_otp(db: Session, user_id: str, channel: str, otp: str) -> dict[str, Any]:
-    """Confirm verification code and update verified status."""
-    user = db.get(User, user_id)
-    if not user:
-        raise ServiceError("User not found")
-
-    clean_otp = otp.strip()
-    # Accept 123456 in demo mode
-    if clean_otp != "123456":
-        raise ServiceError("Invalid verification code. Please check and try again.")
-
-    if channel == "email":
-        user.email_verified = True
-    elif channel == "phone":
-        user.phone_verified = True
-    else:
-        raise ServiceError("Invalid verification channel")
-
-    user.updated_at = utcnow()
-    _audit(db, user_id, f"verify_{channel}_success", f"Successfully verified {channel}")
-    db.commit()
-
-    return {
-        "status": "verified",
-        "channel": channel,
-        "message": f"Your {channel} has been successfully verified.",
-        "profile": get_profile(db, user_id),
-    }
+def confirm_verification_otp(
+    db: Session,
+    user_id: str,
+    channel: str,
+    otp: str,
+    purpose: str | None = None,
+) -> dict[str, Any]:
+    """Confirm verification code via secure constant-time hash comparison and update status."""
+    from app.services import verification as verify_svc
+    res = verify_svc.confirm_otp(db, user_id, channel, otp, purpose=purpose)
+    res["profile"] = get_profile(db, user_id)
+    return res
+    from app.services import verification as verify_svc
+    res = verify_svc.confirm_otp(db, user_id, channel, otp)
+    res["profile"] = get_profile(db, user_id)
+    return res
 
 
 # ==============================================================================
@@ -807,6 +797,10 @@ def get_identity_documents(db: Session, user_id: str) -> list[dict[str, Any]]:
             "document_type": d.document_type,
             "masked_number": _mask_doc_number(d.document_type, d.document_number),
             "verification_status": d.verification_status,
+            "verification_provider": getattr(d, "verification_provider", None),
+            "verified_at": iso(d.verified_at) if getattr(d, "verified_at", None) else None,
+            "verification_reference_id": getattr(d, "verification_reference_id", None),
+            "failure_reason": getattr(d, "verification_failure_reason", None),
             "issuing_authority": d.issuing_authority or "Government Authority",
             "expiry_date": iso(d.expiry_date) if d.expiry_date else None,
             "file_name": d.file_name,

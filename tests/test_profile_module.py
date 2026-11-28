@@ -22,6 +22,7 @@ import pytest
 os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="sh_prof_test_")
 os.environ["ANTHROPIC_API_KEY"] = ""
 
+from app import config
 from app.db import SessionLocal, User
 from app.services import profile as profile_svc
 from app.services.common import ServiceError
@@ -31,7 +32,10 @@ from scripts.seed import seed
 @pytest.fixture(autouse=True)
 def setup_db():
     seed()
+    prev_demo = config.DEMO_MODE
+    config.DEMO_MODE = True
     yield
+    config.DEMO_MODE = prev_demo
 
 
 def test_get_profile_and_completion():

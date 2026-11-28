@@ -21,6 +21,7 @@ export function OtpVerificationModal({
   const [error, setError] = useState<string | null>(null)
   const [resending, setResending] = useState(false)
   const [resendNotice, setResendNotice] = useState<string | null>(null)
+  const [devDemoCode, setDevDemoCode] = useState<string | null>(null)
 
   if (!isOpen || !channel) return null
 
@@ -55,6 +56,9 @@ export function OtpVerificationModal({
         method: 'POST',
         body: { channel },
       })
+      if (import.meta.env.DEV && res.demo_code) {
+        setDevDemoCode(res.demo_code)
+      }
       setResendNotice(res.message || 'New OTP sent successfully.')
     } catch (err: any) {
       setError(err?.message || 'Failed to resend code.')
@@ -98,19 +102,21 @@ export function OtpVerificationModal({
             <strong className="text-slate-900">{target}</strong>.
           </p>
 
-          <div className="p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-800 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="font-bold">Demo Passcode:</span>
-              <code className="px-2 py-0.5 bg-blue-100 rounded font-mono font-bold text-blue-900">123456</code>
+          {import.meta.env.DEV && devDemoCode && (
+            <div className="p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="font-bold">Development Passcode:</span>
+                <code className="px-2 py-0.5 bg-blue-100 rounded font-mono font-bold text-blue-900">{devDemoCode}</code>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOtp(devDemoCode)}
+                className="text-blue-600 hover:underline font-semibold"
+              >
+                Fill code
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setOtp('123456')}
-              className="text-blue-600 hover:underline font-semibold"
-            >
-              Fill code
-            </button>
-          </div>
+          )}
 
           {resendNotice && (
             <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 font-medium">
@@ -133,7 +139,7 @@ export function OtpVerificationModal({
               maxLength={6}
               value={otp}
               onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
-              placeholder="123456"
+              placeholder="• • • • • •"
               className="w-full text-center tracking-widest text-xl font-bold font-mono rounded-xl border border-slate-300 px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#ff7518] focus:border-[#ff7518]"
             />
           </div>

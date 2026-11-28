@@ -138,8 +138,10 @@ class User(Base):
     role_label: Mapped[str] = mapped_column(String, default="")
     email: Mapped[str | None] = mapped_column(String, nullable=True, default="")
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    pending_email: Mapped[str | None] = mapped_column(String, nullable=True)
     phone: Mapped[str | None] = mapped_column(String, nullable=True, default="")
     phone_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    pending_phone: Mapped[str | None] = mapped_column(String, nullable=True)
     date_of_birth: Mapped[str | None] = mapped_column(String, nullable=True)
     gender: Mapped[str | None] = mapped_column(String, nullable=True)
     profile_photo: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -569,6 +571,10 @@ class Vehicle(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     registration_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verification_status: Mapped[str] = mapped_column(String, default="unverified")  # unverified | pending | verified | failed
+    verification_provider: Mapped[str | None] = mapped_column(String, nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verification_reference_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -638,7 +644,11 @@ class CentralDocument(Base):
     issuing_authority: Mapped[str | None] = mapped_column(String, nullable=True)
     issue_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expiry_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    verification_status: Mapped[str] = mapped_column(String, default="verified")  # verified | expiring_soon | expired | pending | not_verified
+    verification_status: Mapped[str] = mapped_column(String, default="unverified")  # unverified | pending | verified | failed
+    verification_provider: Mapped[str | None] = mapped_column(String, nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verification_reference_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    verification_failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     resource_type: Mapped[str] = mapped_column(String, default="USER")  # USER | VEHICLE | ACCIDENT_CASE
     resource_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)  # user_id, vehicle_id, or case_id
@@ -912,6 +922,47 @@ class ConsentRecord(Base):
     consent_timestamp: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class VerificationRecord(Base):
+    """Immutable log of verification transactions across users, vehicles, and documents."""
+    __tablename__ = "verification_records"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("vrec"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    entity_type: Mapped[str] = mapped_column(String, index=True)  # USER_EMAIL | USER_PHONE | IDENTITY_DOCUMENT | VEHICLE_RC | VEHICLE_INSURANCE
+    entity_id: Mapped[str] = mapped_column(String, index=True)    # user_id, document_id, vehicle_id, policy_id
+    provider: Mapped[str] = mapped_column(String)                 # DIGILOCKER | VAHAN_PARIVAHAN | IIB_INSURANCE | SMS_OTP | EMAIL_OTP
+    status: Mapped[str] = mapped_column(String, default="PENDING")# PENDING | VERIFIED | FAILED | REVOKED
+    verification_type: Mapped[str] = mapped_column(String)       # OTP | API_MATCH | OAUTH_DIGILOCKER
+    verification_reference_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    consent_record_id: Mapped[str | None] = mapped_column(ForeignKey("consent_records.id"), nullable=True)
+    raw_response_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    verified_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    ip_address: Mapped[str | None] = mapped_column(String, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class OtpVerification(Base):
+    """Manages ephemeral, cryptographically salted and hashed OTP codes for mobile and email."""
+    __tablename__ = "otp_verifications"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("otp"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    channel: Mapped[str] = mapped_column(String)                  # email | phone
+    purpose: Mapped[str] = mapped_column(String, default="email_verify") # email_verify | phone_verify | step_up | email_change | phone_change
+    target: Mapped[str] = mapped_column(String)                   # email or phone
+    otp_hash: Mapped[str] = mapped_column(String)                 # Salted SHA-256 hash
+    salt: Mapped[str] = mapped_column(String)                     # Hex salt
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=5)
+    is_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 def init_db() -> None:

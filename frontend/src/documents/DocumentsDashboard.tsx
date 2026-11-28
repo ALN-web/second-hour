@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react'
 import type { DocumentItem, DocumentSummary, VehicleOption } from './types'
+import { api } from '../api'
 
 interface DocumentsDashboardProps {
   documents: DocumentItem[]
@@ -12,6 +13,7 @@ interface DocumentsDashboardProps {
   onReplaceFile: (doc: DocumentItem) => void
   onDeleteDocument: (docId: string) => void
   onBackHome: () => void
+  onRefresh?: () => void
 }
 
 const CATEGORY_TABS = [
@@ -35,6 +37,7 @@ export function DocumentsDashboard({
   onReplaceFile,
   onDeleteDocument,
   onBackHome,
+  onRefresh,
 }: DocumentsDashboardProps) {
   const [activeCategory, setActiveCategory] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
@@ -42,6 +45,35 @@ export function DocumentsDashboard({
   const [selectedVehicle, setSelectedVehicle] = useState('all')
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
+  const [verifyingDocId, setVerifyingDocId] = useState<string | null>(null)
+  const [verifyNotice, setVerifyNotice] = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
+
+  const handleVerifyDoc = async (doc: DocumentItem) => {
+    try {
+      setVerifyingDocId(doc.id)
+      setVerifyNotice(null)
+      const res = await api(`/api/verify/documents/${doc.id}/verify`, { method: 'POST' })
+      if (res.status === 'verified') {
+        setVerifyNotice({
+          type: 'success',
+          msg: `"${doc.document_name}" verified successfully (Ref: ${res.reference_id || 'Registry'}).`,
+        })
+        if (onRefresh) onRefresh()
+      } else {
+        setVerifyNotice({
+          type: 'error',
+          msg: `Verification failed: ${res.reason || 'Could not verify document.'}`,
+        })
+      }
+    } catch (err: any) {
+      setVerifyNotice({
+        type: 'error',
+        msg: err?.message || 'Verification failed. Please retry.',
+      })
+    } finally {
+      setVerifyingDocId(null)
+    }
+  }
 
   // Filtered documents
   const filteredDocs = useMemo(() => {
@@ -358,6 +390,17 @@ export function DocumentsDashboard({
 
         </div>
 
+        {verifyNotice && (
+          <div className={`p-4 rounded-xl text-xs font-medium flex items-center justify-between gap-2 ${
+            verifyNotice.type === 'success'
+              ? 'bg-emerald-50 border border-emerald-200 text-emerald-800'
+              : 'bg-red-50 border border-red-200 text-red-800'
+          }`}>
+            <span>{verifyNotice.msg}</span>
+            <button onClick={() => setVerifyNotice(null)} className="text-slate-400 hover:text-slate-700">✕</button>
+          </div>
+        )}
+
         {/* ========================================================= DOCUMENTS LISTING */}
         {loading ? (
           <div className="card py-16 text-center space-y-3">
@@ -429,10 +472,25 @@ export function DocumentsDashboard({
                         </div>
                       </div>
 
-                      {/* Expiry Status Pill */}
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border flex-shrink-0 capitalize ${statusPill}`}>
-                        {doc.status.replace('_', ' ')}
-                      </span>
+                      {/* Status and Verification Pills */}
+                      <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border capitalize ${statusPill}`}>
+                          {doc.status.replace('_', ' ')}
+                        </span>
+                        {doc.verification_status === 'verified' ? (
+                          <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            ✓ Verified
+                          </span>
+                        ) : doc.verification_status === 'failed' ? (
+                          <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-red-50 text-red-700 border border-red-200">
+                            ✗ Failed
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                            Unverified
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     {/* Resource Association Chip */}
@@ -486,6 +544,15 @@ export function DocumentsDashboard({
                         <span>Preview</span>
                         <span>→</span>
                       </button>
+                      {doc.verification_status !== 'verified' && (
+                        <button
+                          onClick={() => handleVerifyDoc(doc)}
+                          disabled={verifyingDocId === doc.id}
+                          className="px-2 py-0.5 text-[11px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition disabled:opacity-50 cursor-pointer"
+                        >
+                          {verifyingDocId === doc.id ? '...' : doc.verification_status === 'failed' ? 'Retry' : 'Verify'}
+                        </button>
+                      )}
                       <a
                         href={`${doc.download_url}?download=true`}
                         download={doc.file_name}

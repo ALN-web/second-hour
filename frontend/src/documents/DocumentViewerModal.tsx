@@ -204,6 +204,37 @@ export function DocumentViewerModal({
                   </div>
                 </div>
 
+                <div>
+                  <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
+                    Verification State
+                  </span>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    {document.verification_status === 'verified' ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        ✓ Verified {document.verification_provider ? `via ${document.verification_provider}` : ''}
+                      </span>
+                    ) : document.verification_status === 'failed' ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">
+                        ✗ Failed Verification
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                        Unverified Document
+                      </span>
+                    )}
+                  </div>
+                  {document.verification_reference_id && (
+                    <span className="text-[10px] font-mono text-slate-500 block mt-0.5">
+                      Ref: {document.verification_reference_id}
+                    </span>
+                  )}
+                  {document.verification_failure_reason && (
+                    <p className="text-[11px] text-red-600 mt-1">
+                      Reason: {document.verification_failure_reason}
+                    </p>
+                  )}
+                </div>
+
                 {document.document_number && (
                   <div>
                     <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">

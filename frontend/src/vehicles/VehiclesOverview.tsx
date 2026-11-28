@@ -284,9 +284,18 @@ export function VehiclesOverview({
                     </div>
                   </div>
 
-                  {/* Insurance Status Indicator */}
-                  <div className="pt-1">
+                  {/* Insurance and Verification Status Indicator */}
+                  <div className="pt-1 flex flex-wrap items-center gap-2">
                     {getInsuranceBadge(vehicle.insurance)}
+                    {vehicle.verification_status === 'verified' ? (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        ✓ VAHAN Verified
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                        Unverified RC
+                      </span>
+                    )}
                   </div>
 
                   {/* Key Specifications Grid */}

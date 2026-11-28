@@ -12,7 +12,11 @@ export interface DocumentItem {
   issuing_authority?: string | null
   issue_date?: string | null
   expiry_date?: string | null
-  verification_status: 'verified' | 'expiring_soon' | 'expired' | 'pending' | 'not_verified'
+  verification_status: 'verified' | 'unverified' | 'pending' | 'failed' | 'expiring_soon' | 'expired' | 'not_verified'
+  verification_provider?: string | null
+  verified_at?: string | null
+  verification_reference_id?: string | null
+  verification_failure_reason?: string | null
   notes?: string | null
   resource_type: 'USER' | 'VEHICLE' | 'ACCIDENT_CASE'
   resource_id?: string | null

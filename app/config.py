@@ -24,8 +24,28 @@ MCP_PORT = int(os.getenv("MCP_PORT", "8001"))
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "claude-sonnet-5-5")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
-# Presenter controls (reset + stage the synthetic demo case). Set DEMO_MODE=0 in any real deployment.
-DEMO_MODE = os.getenv("DEMO_MODE", "1") != "0"
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
+
+# Fail-closed demo mode: defaults to False
+raw_demo = os.getenv("DEMO_MODE", "0").strip().lower()
+is_demo_requested = raw_demo in ("1", "true", "yes", "on")
+
+# Production and staging environments must strictly reject demo mode
+if ENVIRONMENT in ("production", "staging", "prod", "stage"):
+    if is_demo_requested:
+        raise RuntimeError(f"FATAL SECURITY CONFIGURATION: DEMO_MODE cannot be enabled in {ENVIRONMENT} environment!")
+    DEMO_MODE = False
+else:
+    # In local development or testing, demo mode only activates when explicitly enabled
+    DEMO_MODE = is_demo_requested
+
+# Server-side HMAC secret for OTP hashing
+OTP_HMAC_SECRET = os.getenv("OTP_HMAC_SECRET", "").strip()
+if not OTP_HMAC_SECRET:
+    if ENVIRONMENT in ("production", "staging", "prod", "stage"):
+        raise RuntimeError(f"FATAL SECURITY CONFIGURATION: OTP_HMAC_SECRET must be configured in {ENVIRONMENT} environment!")
+    # In local dev only, provide a fallback secret if unset
+    OTP_HMAC_SECRET = "dev-insecure-otp-hmac-secret-local-only-do-not-use-in-prod"
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_multilingual_v2")
 
