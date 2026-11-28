@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -24,8 +25,16 @@ from app.db import (
     new_id,
     utcnow,
 )
+from app.services.audit import record_audit
 from app.services.common import PermissionDenied, ServiceError, iso
 from app.storage import get_storage
+
+
+def normalize_registration_number(reg: str | None) -> str:
+    """Normalize vehicle registration number for canonical comparison (uppercase alphanumeric only)."""
+    if not reg:
+        return ""
+    return re.sub(r"[^A-Za-z0-9]", "", str(reg)).upper()
 
 
 def require_vehicle_owner(db: Session, user_id: str, vehicle_id: str) -> Vehicle:
@@ -348,23 +357,66 @@ def create_vehicle(db: Session, user_id: str, data: dict[str, Any]) -> dict[str,
 
 
 def update_vehicle(db: Session, user_id: str, vehicle_id: str, data: dict[str, Any]) -> dict[str, Any]:
-    """Edit vehicle information with primary toggle and insurance policy renewal support."""
+    """Edit vehicle information with registration change invalidation and insurance policy renewal support."""
     v = require_vehicle_owner(db, user_id, vehicle_id)
 
     if "registration_number" in data and data["registration_number"]:
-        new_reg = str(data["registration_number"]).upper().strip()
-        if new_reg != v.registration_number:
-            existing = db.scalars(
+        new_reg = str(data["registration_number"]).strip().upper()
+        old_reg = (v.registration_number or "").strip().upper()
+        new_norm = normalize_registration_number(new_reg)
+        old_norm = normalize_registration_number(old_reg)
+
+        if new_norm != old_norm:
+            # Check duplicate against other active vehicles of this user using normalized check
+            other_vehicles = db.scalars(
                 select(Vehicle).where(
                     Vehicle.user_id == user_id,
-                    Vehicle.registration_number == new_reg,
                     Vehicle.id != v.id,
                     Vehicle.is_active.is_(True),
                     Vehicle.deleted_at.is_(None),
                 )
-            ).first()
-            if existing:
-                raise ServiceError(f"A vehicle with registration number '{new_reg}' is already registered in your account.")
+            ).all()
+            for other_v in other_vehicles:
+                if normalize_registration_number(other_v.registration_number) == new_norm:
+                    raise ServiceError(f"A vehicle with registration number '{new_reg}' is already registered in your account.")
+
+            # Apply new registration number
+            v.registration_number = new_reg
+
+            # If vehicle was verified or pending, genuinely changing registration invalidates verification
+            current_status = getattr(v, "verification_status", "unverified") or "unverified"
+            if current_status in ("verified", "pending"):
+                old_status = current_status
+                old_provider = v.verification_provider
+                old_ref = v.verification_reference_id
+                old_verified_at = v.verified_at
+
+                v.verification_status = "unverified"
+                v.verification_provider = None
+                v.verification_reference_id = None
+                v.verified_at = None
+                v.verification_failure_reason = f"Registration number changed from '{old_reg}' to '{new_reg}'. Re-verification required."
+
+                record_audit(
+                    db=db,
+                    actor_id=user_id,
+                    action_type="vehicle_verification_invalidated",
+                    resource_type="vehicle",
+                    resource_id=v.id,
+                    action_outcome="success",
+                    result_summary=f"Vehicle verification invalidated due to registration number change ({old_reg} -> {new_reg})",
+                    payload={
+                        "old_registration": old_reg,
+                        "new_registration": new_reg,
+                        "old_verification_status": old_status,
+                        "old_verification_provider": old_provider,
+                        "old_verification_reference_id": old_ref,
+                        "old_verified_at": iso(old_verified_at) if old_verified_at else None,
+                    },
+                )
+        elif new_reg != old_reg:
+            # Same normalized registration with harmless formatting change (e.g. 'ka 01 mj 4012' vs 'KA-01-MJ-4012')
+            # Update string representation while strictly preserving existing verification status and metadata
             v.registration_number = new_reg
 
     fields = [
