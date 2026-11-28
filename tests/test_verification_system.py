@@ -189,20 +189,21 @@ def test_digilocker_verification_with_consent(db, test_user):
         issuing_authority="MoRTH",
     )
 
-    # Verify via DigiLocker
+    # Verify via DigiLocker in default MOCK mode (must NEVER grant verified status)
     res = verify_svc.DigiLockerAdapter.verify_identity_document(
         db, user_id=test_user.id, document_id=doc_dict["id"], consent_record_id=consent.id
     )
-    assert res["status"] == "verified"
-    assert res["provider"] == "DIGILOCKER"
-    assert "DLK-" in res["reference_id"]
+    assert res["status"] == "pending"
+    assert res["provider"] == "MOCK_DIGILOCKER"
+    assert "MOCK-" in res["reference_id"]
+    assert res["simulated"] is True
     assert res["metadata"]["digital_signature_valid"] is True
 
-    # Check database doc
+    # Check database doc: status must be pending, verified_at must be None
     db_doc = db.get(CentralDocument, doc_dict["id"])
-    assert db_doc.verification_status == "verified"
-    assert db_doc.verification_provider == "DIGILOCKER"
-    assert db_doc.verified_at is not None
+    assert db_doc.verification_status == "pending"
+    assert db_doc.verification_provider == "MOCK_DIGILOCKER"
+    assert db_doc.verified_at is None
 
     # Cleanup
     db.delete(db_doc)
@@ -210,24 +211,25 @@ def test_digilocker_verification_with_consent(db, test_user):
 
 
 def test_vahan_vehicle_verification(db, test_user):
-    """Test VAHAN adapter verifies vehicle registration certificate."""
+    """Test VAHAN adapter verifies vehicle registration certificate in default MOCK mode."""
     veh = db.scalars(
         select(Vehicle).where(Vehicle.user_id == test_user.id, Vehicle.is_active.is_(True))
     ).first()
     assert veh is not None, "Demo vehicle must exist"
 
-    # Verify vehicle
+    # Verify vehicle in default MOCK mode
     res = verify_svc.VahanAdapter.verify_vehicle(db, user_id=test_user.id, vehicle_id=veh.id)
-    assert res["status"] == "verified"
-    assert res["provider"] == "VAHAN_PARIVAHAN"
-    assert "VAHAN-" in res["reference_id"]
+    assert res["status"] == "pending"
+    assert res["provider"] == "MOCK_VAHAN_PARIVAHAN"
+    assert "MOCK-" in res["reference_id"]
+    assert res["simulated"] is True
     assert "masked_chassis" in res["metadata"]
 
     # Verify database state
     db.refresh(veh)
-    assert veh.verification_status == "verified"
-    assert veh.verification_provider == "VAHAN_PARIVAHAN"
-    assert veh.verified_at is not None
+    assert veh.verification_status == "pending"
+    assert veh.verification_provider == "MOCK_VAHAN_PARIVAHAN"
+    assert veh.verified_at is None
 
 
 def test_vahan_invalid_vehicle_failure_and_retry(db, test_user):

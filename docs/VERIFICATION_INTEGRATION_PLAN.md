@@ -187,8 +187,88 @@ CREATE INDEX ix_otp_verifications_user_channel ON otp_verifications(user_id, cha
 
 ## 6. Implementation Stages & Roadmap
 
-- **Stage 1 (Current):** Architectural inspection, integration research, and implementation plan.
-- **Stage 2:** Email & Mobile verification with secure salted OTP hashing, rate-limiting, and profile synchronization.
+- **Stage 1:** Architectural inspection, integration research, and implementation plan.
+- **Stage 2:** Email & Mobile verification with secure keyed HMAC-SHA256 OTP hashing, rate-limiting, and profile synchronization.
 - **Stage 3:** Central document verification framework, schema updates, unverified default status, and retry workflows.
 - **Stage 4:** Pluggable Provider Adapters (DigiLocker, VAHAN, IIB Insurance) with sandbox simulation and consent checks.
 - **Stage 5:** Frontend integration across My Profile, My Vehicles, and Documents with verification badges, modals, and retry triggers.
+- **Stage 6 (Step 2 Hardening):** Strict provider trust levels (`MOCK`, `SANDBOX`, `PRODUCTION`), centralized status transitions, vehicle registration invalidation, and fail-closed credential checks.
+
+---
+
+## 7. Strict Provider Trust Levels & Execution Modes
+
+To prevent development or mock adapters from conferring authentic `verified` status on production documents, vehicles, or insurance policies, Second Hour standardizes three explicit execution modes:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           Provider Trust Levels                                │
+├───────────────────┬─────────────────────────────────────────────────────────────┤
+│ Mode              │ Permitted Status Transitions & Guarantees                   │
+├───────────────────┼─────────────────────────────────────────────────────────────┤
+│ MOCK              │ - MUST NEVER grant 'verified' status.                       │
+│ (Default)         │ - Status always remains 'pending'.                          │
+│                   │ - Provider prefixed with 'MOCK_' (e.g. MOCK_VAHAN_PARIVAHAN)│
+│                   │ - Simulated reference ID prefixed with 'MOCK-SIMULATED-'    │
+│                   │ - verified_at is always NULL.                               │
+│                   │ - Safe for offline development and local UI testing.        │
+├───────────────────┼─────────────────────────────────────────────────────────────┤
+│ SANDBOX           │ - Explicitly distinguishable from production verification.   │
+│                   │ - Status remains 'pending'.                                 │
+│                   │ - Provider prefixed with 'SANDBOX_'                         │
+│                   │ - Reference ID prefixed with 'SANDBOX-'                     │
+│                   │ - verified_at is always NULL.                               │
+│                   │ - Cannot mark real user documents/vehicles verified.        │
+├───────────────────┼─────────────────────────────────────────────────────────────┤
+│ PRODUCTION        │ - Requires live, authorized institutional credentials.      │
+│                   │ - Only mode permitted to grant 'verified' status.           │
+│                   │ - Missing credentials FAIL CLOSED immediately with error.   │
+│                   │ - Timeouts, malformed responses, errors NEVER grant status. │
+│                   │ - Persists real provider reference and UTC timestamp.       │
+└───────────────────┴─────────────────────────────────────────────────────────────┘
+```
+
+### Why User Uploads & Mock Responses Are Not Proof of Authenticity
+1. **Self-Uploaded Documents:** Any user can upload an arbitrary PDF or image file claiming to be a Government DL or RC. Self-uploaded files default to `unverified` and can only transition after authorized institutional verification.
+2. **Mock & Sandbox Responses:** In local development or automated test environments, mock adapters return synthetic JSON structures for predictable UI demonstration. These synthetic responses represent simulated workflows, NOT institutional validation. Conferring `verified` status based on mock data would represent a critical security vulnerability.
+
+---
+
+## 8. Centralized Verification Status Transitions
+
+All status changes on `CentralDocument`, `Vehicle`, and `VehicleInsurancePolicy` MUST pass through `transition_verification_status()`. Individual provider adapters and direct API endpoints are strictly forbidden from modifying verification columns directly.
+
+### Central Transition Invariants:
+1. Direct updates via `PATCH /api/documents/{id}` or `PUT /api/vehicles/{id}` cannot modify `verification_status`.
+2. `transition_verification_status` enforces trust mode checks before any database commit.
+3. Every verification attempt (whether mock, sandbox, production success, or failure) writes an immutable record to `verification_records` and logs to `audit_log`.
+
+---
+
+## 9. Vehicle Registration Change Invalidation Rules
+
+When a vehicle's registration number is modified in `update_vehicle`:
+
+1. **Normalized String Comparison:** Registration numbers are normalized using `normalize_registration_number()` (stripping all whitespace, hyphens, and punctuation, and uppercasing).
+2. **Genuinely Changed Registration:**
+   - If `new_normalized != old_normalized`:
+     - Existing `verification_status` is immediately reset to `'unverified'`.
+     - `verification_provider`, `verification_reference_id`, and `verified_at` are cleared to `NULL`.
+     - `verification_failure_reason` is set indicating that the registration number changed and re-verification is required.
+     - An audit log entry (`vehicle_verification_invalidated`) is recorded.
+3. **Harmless Formatting Difference:**
+   - If `new_normalized == old_normalized` (e.g., `"ka 01 mj 4012"` vs `"KA-01-MJ-4012"`):
+     - The formatted string is updated.
+     - `verification_status`, `verification_provider`, `verification_reference_id`, and `verified_at` are **strictly preserved**.
+
+---
+
+## 10. Provider Status Inventory
+
+| Provider Adapter | Target Entity | Auth / Verification Mechanism | Current Implementation Status |
+| :--- | :--- | :--- | :--- |
+| **DigiLockerAdapter** | Driving Licence / Identity Doc | OAuth 2.0 PKCE / Issued XML | Stubbed/Mock (production requires client credentials) |
+| **VahanAdapter** | Vehicle RC | VAHAN 4.0 API Match | Stubbed/Mock (production requires VAHAN API key) |
+| **InsuranceAdapter**| Vehicle Insurance Policy | IIB / Insurer Registry API | Stubbed/Mock (production requires IIB API key) |
+| **OtpVerification** | User Email & Phone | Keyed HMAC-SHA256 OTP | **Live Implementation** (fail-closed demo mode, HMAC-secured) |
+
