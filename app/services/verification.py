@@ -792,20 +792,20 @@ class DigiLockerAdapter:
     PROVIDER_NAME = "DIGILOCKER"
 
     @classmethod
-    def initiate_authorization(cls, user_id: str, doc_type: str, redirect_uri: str) -> dict[str, str]:
+    def initiate_authorization(
+        cls,
+        user_id: str,
+        doc_type: str,
+        redirect_uri: str,
+        db: Session | None = None,
+    ) -> dict[str, Any]:
         """Generate secure OAuth 2.0 PKCE state for DigiLocker authorization."""
-        state = secrets.token_urlsafe(32)
-        auth_url = (
-            f"https://digilocker.meripehchaan.gov.in/public/oauth2/1/authorize"
-            f"?response_type=code&client_id=secondhour_verified&state={state}"
-            f"&redirect_uri={redirect_uri}&scope=read"
-        )
-        return {
-            "auth_url": auth_url,
-            "state": state,
-            "provider": cls.PROVIDER_NAME,
-            "expires_in": "900",
-        }
+        from app.services import digilocker_oauth
+        if db is not None:
+            return digilocker_oauth.initiate_oauth_flow(db, user_id=user_id, redirect_uri=redirect_uri, doc_type=doc_type)
+        from app.db import SessionLocal
+        with SessionLocal() as session:
+            return digilocker_oauth.initiate_oauth_flow(session, user_id=user_id, redirect_uri=redirect_uri, doc_type=doc_type)
 
     @classmethod
     def verify_identity_document(
@@ -838,6 +838,19 @@ class DigiLockerAdapter:
         effective_mode = (trust_mode or get_provider_mode()).strip().upper()
         if effective_mode == ProviderTrustMode.PRODUCTION:
             check_provider_credentials(cls.PROVIDER_NAME, effective_mode)
+
+            # In production, require an active DigiLocker OAuth connection
+            from app.db import UserDigiLockerConnection
+            conn = db.scalars(
+                select(UserDigiLockerConnection).where(UserDigiLockerConnection.user_id == user_id)
+            ).first()
+            if not conn or conn.connection_status != "connected":
+                raise ServiceError("DigiLocker account is not connected. Please connect your DigiLocker account before verifying documents.")
+
+            # If token expired, refresh it
+            if conn.access_token_expires_at and _normalize_dt(conn.access_token_expires_at) < _normalize_dt(utcnow()):
+                from app.services.digilocker_oauth import refresh_digilocker_token
+                refresh_digilocker_token(db, user_id)
 
         ref_id = f"DLK-{uuid4().hex[:12].upper()}"
         doc_num = doc.document_number or "DL-1420110012345"
