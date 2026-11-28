@@ -1,7 +1,10 @@
-.PHONY: dev seed test mcp api ui build
+.PHONY: dev check seed test mcp api ui build
 
 dev:
-	./start.sh
+	python scripts/dev.py
+
+check:
+	python scripts/dev.py --check-only
 
 seed:
 	python -m scripts.seed

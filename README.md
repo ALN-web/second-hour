@@ -189,7 +189,7 @@ Only **user-confirmed** bill totals count. The police status is labelled **user-
 
 ## 🚀 Quick start
 
-**Prerequisites:** Python 3.11+ and Node 20+. An Anthropic key is optional, because an offline agent still runs through MCP. An ElevenLabs key is optional too.
+**Prerequisites:** Python 3.10+ and Node.js 18+. An Anthropic key is optional, because an offline agent still runs through MCP. An ElevenLabs key is optional too.
 
 ```bash
 git clone https://github.com/ALN-web/second-hour.git && cd second-hour
@@ -197,12 +197,48 @@ git clone https://github.com/ALN-web/second-hour.git && cd second-hour
 python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env                 # add ANTHROPIC_API_KEY / ELEVENLABS_API_KEY
+cp .env.example .env                 # configure secrets or use SQLite fallback
 
 cd frontend && npm install && cd ..
-python -m scripts.seed               # demo users, case SH-2026-0001, synthetic PDFs
+```
 
-./start.sh                           # Windows PowerShell: .\start.ps1 -Seed
+### ⚡ Start the entire application with one command
+
+```bash
+python scripts/dev.py
+```
+
+Or using `make`:
+```bash
+make dev
+```
+
+This single command automatically:
+1. Detects your virtual environment Python (`.venv`) and platform `npm` (`npm.cmd` on Windows, `npm` on Unix/macOS).
+2. Validates your environment and database connectivity (PostgreSQL Neon or SQLite fallback).
+3. Pre-emptively verifies that ports `8000`, `8001`, and `5173` are free.
+4. Starts the **MCP Server** (`http://127.0.0.1:8001/mcp`) and waits for health readiness.
+5. Starts the **FastAPI Backend** (`http://127.0.0.1:8000/api/health`) and waits for health readiness.
+6. Starts the **Vite React Frontend** (`http://localhost:5173`) and prefixes all logs cleanly.
+7. Handles clean, graceful shutdown (`Ctrl+C` / `SIGINT` / `SIGTERM`) terminating child process trees without orphaned processes.
+
+#### Pre-flight checks & launcher options
+
+```bash
+# Run pre-flight requirement & environment checks only (exits 0 if ready)
+python scripts/dev.py --check-only
+
+# Seed database before starting services
+python scripts/dev.py --seed
+
+# Run backend and MCP server headless (without Vite frontend)
+python scripts/dev.py --no-frontend
+
+# Run without MCP server
+python scripts/dev.py --no-mcp
+
+# Custom ports
+python scripts/dev.py --port-backend 8080 --port-mcp 8081 --port-frontend 3000
 ```
 
 Open **http://localhost:5173**. As a shortcut, **http://localhost:5173/?as=u_priya&case=case_demo** opens the case directly as Priya.
@@ -212,6 +248,15 @@ Open **http://localhost:5173**. As a shortcut, **http://localhost:5173/?as=u_pri
 | Web app (dev) | http://localhost:5173 |
 | Agent host + built UI | http://localhost:8000 |
 | MCP server | http://localhost:8001/mcp |
+
+#### Individual service commands (manual / advanced)
+
+If you prefer running services in separate terminals:
+- **Backend API:** `uvicorn app.api:app --port 8000` (or `python -m uvicorn app.api:app --port 8000`)
+- **Frontend App:** `cd frontend && npm run dev`
+- **MCP Server:** `python -m app.mcp_server`
+- **Database Seeding:** `python -m scripts.seed`
+- **Legacy shell scripts:** `./start.sh` (Linux/macOS) or `powershell -File .\start.ps1` (Windows)
 
 ```bash
 python -m pytest -q tests            # 9 tests: MCP discovery, permissions, watchers, RAG
