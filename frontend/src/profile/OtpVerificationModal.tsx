@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api'
 
 interface OtpVerificationModalProps {
@@ -20,8 +20,43 @@ export function OtpVerificationModal({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [resending, setResending] = useState(false)
+  const [requestingInitial, setRequestingInitial] = useState(false)
   const [resendNotice, setResendNotice] = useState<string | null>(null)
   const [devDemoCode, setDevDemoCode] = useState<string | null>(null)
+
+  // Automatically request OTP dispatch when modal opens
+  useEffect(() => {
+    let active = true
+    if (isOpen && channel) {
+      setOtp('')
+      setError(null)
+      setResendNotice(null)
+      setDevDemoCode(null)
+      setRequestingInitial(true)
+
+      api('/api/profile/verify/request-otp', {
+        method: 'POST',
+        body: { channel },
+      })
+        .then((res) => {
+          if (!active) return
+          if (import.meta.env.DEV && res.demo_code) {
+            setDevDemoCode(res.demo_code)
+          }
+          setResendNotice(res.message || 'OTP sent successfully.')
+        })
+        .catch((err: any) => {
+          if (!active) return
+          setError(err?.message || 'Unable to send OTP. Please try again.')
+        })
+        .finally(() => {
+          if (active) setRequestingInitial(false)
+        })
+    }
+    return () => {
+      active = false
+    }
+  }, [isOpen, channel])
 
   if (!isOpen || !channel) return null
 
@@ -52,6 +87,7 @@ export function OtpVerificationModal({
     try {
       setResending(true)
       setError(null)
+      setResendNotice(null)
       const res = await api('/api/profile/verify/request-otp', {
         method: 'POST',
         body: { channel },
@@ -59,9 +95,9 @@ export function OtpVerificationModal({
       if (import.meta.env.DEV && res.demo_code) {
         setDevDemoCode(res.demo_code)
       }
-      setResendNotice(res.message || 'New OTP sent successfully.')
+      setResendNotice(res.message || 'OTP sent successfully.')
     } catch (err: any) {
-      setError(err?.message || 'Failed to resend code.')
+      setError(err?.message || 'Unable to send OTP. Please try again.')
     } finally {
       setResending(false)
     }
@@ -101,6 +137,13 @@ export function OtpVerificationModal({
             We have dispatched a 6-digit one-time verification passcode to{' '}
             <strong className="text-slate-900">{target}</strong>.
           </p>
+
+          {requestingInitial && (
+            <div className="p-2.5 rounded-lg bg-orange-50 border border-orange-200 text-xs text-orange-800 font-medium flex items-center gap-2">
+              <div className="w-3.5 h-3.5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
+              <span>Dispatching verification passcode to {target}...</span>
+            </div>
+          )}
 
           {import.meta.env.DEV && devDemoCode && (
             <div className="p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-800 flex items-center justify-between">
