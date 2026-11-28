@@ -39,15 +39,22 @@ def create_app_engine():
 
     # Neon PostgreSQL serverless connection pooling & resilience:
     # - pool_pre_ping: tests connection before checkout, preventing stale socket errors on auto-resume
-    # - pool_recycle: re-establishes connections older than 300s
+    # - pool_recycle: re-establishes connections older than 60s to prevent serverless connection drops
     # - pool_size / max_overflow: handles concurrent requests within serverless connection budgets
+    # - keepalives: keeps socket connection active with Neon pooler
     return create_engine(
         url,
         pool_pre_ping=True,
-        pool_recycle=300,
+        pool_recycle=60,
         pool_size=10,
         max_overflow=20,
-        connect_args={"connect_timeout": 15},
+        connect_args={
+            "connect_timeout": 15,
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
+        },
     )
 
 

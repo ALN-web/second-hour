@@ -46,6 +46,24 @@ if not OTP_HMAC_SECRET:
         raise RuntimeError(f"FATAL SECURITY CONFIGURATION: OTP_HMAC_SECRET must be configured in {ENVIRONMENT} environment!")
     # In local dev only, provide a fallback secret if unset
     OTP_HMAC_SECRET = "dev-insecure-otp-hmac-secret-local-only-do-not-use-in-prod"
+
+# Institutional verification provider execution mode: MOCK | SANDBOX | PRODUCTION (default: MOCK)
+raw_provider_mode = os.getenv("VERIFICATION_PROVIDER_MODE", "MOCK").strip().upper()
+if raw_provider_mode in ("MOCK", "SANDBOX", "PRODUCTION"):
+    VERIFICATION_PROVIDER_MODE = raw_provider_mode
+else:
+    VERIFICATION_PROVIDER_MODE = "MOCK"
+
+# Verification provider credentials (required in PRODUCTION mode; missing credentials fail closed)
+DIGILOCKER_CLIENT_ID = os.getenv("DIGILOCKER_CLIENT_ID", "").strip()
+DIGILOCKER_CLIENT_SECRET = os.getenv("DIGILOCKER_CLIENT_SECRET", "").strip()
+DIGILOCKER_API_BASE = os.getenv("DIGILOCKER_API_BASE", "https://digilocker.meripehchaan.gov.in/public/oauth2/1").strip()
+
+VAHAN_API_KEY = os.getenv("VAHAN_API_KEY", "").strip()
+VAHAN_API_URL = os.getenv("VAHAN_API_URL", "https://api.parivahan.gov.in/vahan4").strip()
+
+IIB_API_KEY = os.getenv("IIB_API_KEY", "").strip()
+IIB_API_URL = os.getenv("IIB_API_URL", "https://api.iib.gov.in/v1").strip()
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_multilingual_v2")
 
