@@ -388,9 +388,22 @@ class ResendEmailAdapter:
                 user_message="Delivery service is not configured for email.",
             )
 
+        # Resolve clean sender address
+        from_raw = (self.from_email or "").strip()
+        # Public webmail domains cannot be verified as custom sending domains on Resend
+        if any(d in from_raw.lower() for d in ("@gmail.com", "@yahoo.com", "@hotmail.com", "@outlook.com")):
+            logger.warning("RESEND_FROM_EMAIL domain '%s' cannot be verified on Resend; using 'Second Hour <onboarding@resend.dev>'.", from_raw)
+            from_addr = "Second Hour <onboarding@resend.dev>"
+        elif "<" in from_raw:
+            from_addr = from_raw
+        elif from_raw:
+            from_addr = f"Second Hour <{from_raw}>"
+        else:
+            from_addr = "Second Hour <onboarding@resend.dev>"
+
         plain_text, html_content = render_email_template(code, expiry_minutes, purpose)
         payload = {
-            "from": f"Second Hour <{self.from_email}>",
+            "from": from_addr,
             "to": [to_email],
             "subject": "Second Hour Verification Code",
             "text": plain_text,
@@ -398,7 +411,7 @@ class ResendEmailAdapter:
         }
 
         try:
-            logger.info("Attempting Resend email OTP dispatch to %s", mask_identifier(to_email))
+            logger.info("Attempting Resend email OTP dispatch to %s (from=%s)", mask_identifier(to_email), from_addr)
             resp = httpx.post(
                 "https://api.resend.com/emails",
                 json=payload,
@@ -416,14 +429,20 @@ class ResendEmailAdapter:
                     reference_id=ref_id,
                     user_message="OTP sent successfully.",
                 )
-            error_data = resp.json().catch(lambda: {}) if hasattr(resp, "json") else {}
-            logger.warning("Resend rejected delivery to %s (HTTP %d): %s", mask_identifier(to_email), resp.status_code, resp.text)
+            error_data: dict[str, Any] = {}
+            try:
+                error_data = resp.json()
+            except Exception:
+                pass
+            err_msg = error_data.get("message") or resp.text or f"HTTP {resp.status_code}"
+            err_code = str(error_data.get("name") or f"RESEND_{resp.status_code}")
+            logger.warning("Resend rejected delivery to %s (HTTP %d): %s", mask_identifier(to_email), resp.status_code, err_msg)
             return DeliveryResult(
                 success=False,
                 provider="RESEND",
                 status=OtpDeliveryStatus.FAILED,
-                error_code="PROVIDER_REJECTED",
-                error_message=f"Resend HTTP {resp.status_code}: {resp.text}",
+                error_code=err_code,
+                error_message=f"Resend error {err_code}: {err_msg}",
                 user_message="Unable to send OTP. Please try again.",
             )
         except httpx.TimeoutException as exc:
@@ -715,7 +734,8 @@ def dispatch_email_otp(to_email: str, code: str, expiry_minutes: int = 10, purpo
         )
 
     # Check for configured adapter
-    if provider_name == "RESEND" or (config.RESEND_API_KEY and not config.SMTP_HOST):
+    use_resend = provider_name == "RESEND" or (not config.EMAIL_PROVIDER and bool(config.RESEND_API_KEY))
+    if use_resend:
         adapter = ResendEmailAdapter()
         if not adapter.is_configured():
             if config.DEMO_MODE:
@@ -766,12 +786,23 @@ def dispatch_email_otp(to_email: str, code: str, expiry_minutes: int = 10, purpo
 def dispatch_sms_otp(to_phone: str, code: str, expiry_minutes: int = 10, purpose: str = "phone_verify") -> DeliveryResult:
     """Dispatch an SMS OTP using the configured SMS gateway.
     
-    Guarantees:
-    - Normalizes Indian mobile numbers (+91 / 10 digits).
-    - Never falls back silently to mock outside explicitly enabled DEMO_MODE.
-    - Missing credentials fail safely reporting unconfigured delivery.
-    - Provider rejections and timeouts return sanitized user messages.
+    NOTE: SMS OTP delivery is temporarily disabled in Second Hour (email OTP only).
+    Existing Twilio and MSG91 implementations are preserved below in _dispatch_sms_otp_engine
+    for future reactivation.
     """
+    logger.info("SMS OTP dispatch requested for %s, but SMS delivery is temporarily disabled.", mask_identifier(to_phone))
+    return DeliveryResult(
+        success=False,
+        provider="DISABLED",
+        status=OtpDeliveryStatus.FAILED,
+        error_code="SMS_DISABLED",
+        error_message="SMS OTP delivery is temporarily disabled in favor of email OTP.",
+        user_message="SMS verification is temporarily disabled. Please use email verification.",
+    )
+
+
+def _dispatch_sms_otp_engine(to_phone: str, code: str, expiry_minutes: int = 10, purpose: str = "phone_verify") -> DeliveryResult:
+    """Preserved underlying SMS delivery engine (Twilio / MSG91)."""
     provider_name = (config.SMS_PROVIDER or "TWILIO").upper().strip()
 
     # Explicit MOCK provider handling
