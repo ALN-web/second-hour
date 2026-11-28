@@ -136,8 +136,10 @@ def get_profile(db: Session, user_id: str) -> dict[str, Any]:
         "role_label": user.role_label,
         "email": user.email or "",
         "email_verified": user.email_verified,
+        "pending_email": getattr(user, "pending_email", None),
         "phone": user.phone or "",
         "phone_verified": user.phone_verified,
+        "pending_phone": getattr(user, "pending_phone", None),
         "date_of_birth": user.date_of_birth,
         "gender": user.gender,
         "profile_photo": user.profile_photo,
@@ -179,20 +181,31 @@ def update_personal_info(db: Session, user_id: str, data: dict[str, Any]) -> dic
     if "profile_photo" in data:
         user.profile_photo = data["profile_photo"]
 
-    # Security requirement: changing phone or email resets verified flag!
+    # Safe pending-contact-change workflow:
+    # Do not silently replace existing verified contact details!
     if "phone" in data:
-        new_phone = str(data["phone"]).strip()
+        new_phone = str(data["phone"]).strip() if data["phone"] else ""
         if new_phone != (user.phone or ""):
-            user.phone = new_phone
-            user.phone_verified = False  # Requires fresh OTP verification
-            _audit(db, user_id, "update_phone", f"Updated mobile number to {new_phone} (pending verification)")
+            if data.get("preserve_existing_until_verified"):
+                user.pending_phone = new_phone
+                _audit(db, user_id, "request_phone_change", f"Initiated mobile change to {new_phone} (pending OTP verification)")
+            else:
+                user.phone = new_phone
+                user.phone_verified = False  # Explicit reset of verified status
+                user.pending_phone = new_phone
+                _audit(db, user_id, "update_phone", f"Updated mobile number to {new_phone} (pending verification)")
 
     if "email" in data:
-        new_email = str(data["email"]).strip()
-        if new_email != (user.email or ""):
-            user.email = new_email
-            user.email_verified = False  # Requires fresh OTP verification
-            _audit(db, user_id, "update_email", f"Updated email address to {new_email} (pending verification)")
+        new_email = str(data["email"]).strip() if data["email"] else ""
+        if new_email.lower() != (user.email or "").lower():
+            if data.get("preserve_existing_until_verified"):
+                user.pending_email = new_email
+                _audit(db, user_id, "request_email_change", f"Initiated email change to {new_email} (pending OTP verification)")
+            else:
+                user.email = new_email
+                user.email_verified = False  # Explicit reset of verified status
+                user.pending_email = new_email
+                _audit(db, user_id, "update_email", f"Updated email address to {new_email} (pending verification)")
 
     user.updated_at = utcnow()
     db.commit()
@@ -205,14 +218,30 @@ def update_personal_info(db: Session, user_id: str, data: dict[str, Any]) -> dic
 # Verification Workflow (OTP)
 # ==============================================================================
 
-def request_verification_otp(db: Session, user_id: str, channel: str) -> dict[str, Any]:
+def request_verification_otp(
+    db: Session,
+    user_id: str,
+    channel: str,
+    purpose: str | None = None,
+    target: str | None = None,
+) -> dict[str, Any]:
     """Initiate cryptographic OTP verification for email or mobile."""
     from app.services import verification as verify_svc
-    return verify_svc.request_otp(db, user_id, channel)
+    return verify_svc.request_otp(db, user_id, channel, target=target, purpose=purpose)
 
 
-def confirm_verification_otp(db: Session, user_id: str, channel: str, otp: str) -> dict[str, Any]:
+def confirm_verification_otp(
+    db: Session,
+    user_id: str,
+    channel: str,
+    otp: str,
+    purpose: str | None = None,
+) -> dict[str, Any]:
     """Confirm verification code via secure constant-time hash comparison and update status."""
+    from app.services import verification as verify_svc
+    res = verify_svc.confirm_otp(db, user_id, channel, otp, purpose=purpose)
+    res["profile"] = get_profile(db, user_id)
+    return res
     from app.services import verification as verify_svc
     res = verify_svc.confirm_otp(db, user_id, channel, otp)
     res["profile"] = get_profile(db, user_id)

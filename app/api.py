@@ -1610,11 +1610,14 @@ class PersonalInfoPayload(BaseModel):
 
 class VerifyRequestPayload(BaseModel):
     channel: str  # email | phone
+    purpose: str | None = None
+    target: str | None = None
 
 
 class VerifyConfirmPayload(BaseModel):
     channel: str
     otp: str
+    purpose: str | None = None
 
 
 class EmergencyContactPayload(BaseModel):
@@ -1674,12 +1677,12 @@ def update_user_profile(body: PersonalInfoPayload, user: User = Depends(current_
 
 @app.post("/api/profile/verify/request-otp")
 def request_profile_otp(body: VerifyRequestPayload, user: User = Depends(current_user), db=Depends(get_db)):
-    return profile_svc.request_verification_otp(db, user.id, body.channel)
+    return profile_svc.request_verification_otp(db, user.id, body.channel, purpose=body.purpose, target=body.target)
 
 
 @app.post("/api/profile/verify/confirm-otp")
 def confirm_profile_otp(body: VerifyConfirmPayload, user: User = Depends(current_user), db=Depends(get_db)):
-    return profile_svc.confirm_verification_otp(db, user.id, body.channel, body.otp)
+    return profile_svc.confirm_verification_otp(db, user.id, body.channel, body.otp, purpose=body.purpose)
 
 
 @app.get("/api/profile/contacts")
@@ -1875,11 +1878,13 @@ def delete_acct(body: DeleteAccountPayload, user: User = Depends(current_user), 
 class OtpRequestPayload(BaseModel):
     channel: str
     target: str | None = None
+    purpose: str | None = None
 
 
 class OtpConfirmPayload(BaseModel):
     channel: str
     otp: str
+    purpose: str | None = None
 
 
 class DigiLockerInitiatePayload(BaseModel):
@@ -1906,7 +1911,7 @@ def request_verification_otp_endpoint(
 ):
     ip = request.client.host if request.client else None
     ua = request.headers.get("user-agent")
-    return verify_svc.request_otp(db, user.id, body.channel, body.target, ip_address=ip, user_agent=ua)
+    return verify_svc.request_otp(db, user.id, body.channel, body.target, purpose=body.purpose, ip_address=ip, user_agent=ua)
 
 
 @app.post("/api/verify/otp/confirm")
@@ -1918,7 +1923,7 @@ def confirm_verification_otp_endpoint(
 ):
     ip = request.client.host if request.client else None
     ua = request.headers.get("user-agent")
-    return verify_svc.confirm_otp(db, user.id, body.channel, body.otp, ip_address=ip, user_agent=ua)
+    return verify_svc.confirm_otp(db, user.id, body.channel, body.otp, purpose=body.purpose, ip_address=ip, user_agent=ua)
 
 
 @app.get("/api/verify/status")
