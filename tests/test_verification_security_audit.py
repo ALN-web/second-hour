@@ -33,6 +33,7 @@ from app.db import (
     SessionLocal,
     User,
     Vehicle,
+    VehicleInsurancePolicy,
     VerificationRecord,
     utcnow,
 )
@@ -484,3 +485,508 @@ def test_direct_vehicle_verification_status_tampering(db, user_a):
     )
     db.refresh(veh_a)
     assert veh_a.verification_status == original_status
+
+
+# ==============================================================================
+# Step 2: Verification Provider Safety & Vehicle Verification Invalidation Tests
+# ==============================================================================
+
+def test_mock_digilocker_success_cannot_mark_document_verified(db, user_a):
+    """Test 1: Mock DigiLocker success cannot mark document verified (status is pending)."""
+    # Ensure active consent record exists
+    consent = db.scalars(
+        select(ConsentRecord).where(
+            ConsentRecord.user_id == user_a.id,
+            ConsentRecord.consent_type == "external_document_sharing",
+            ConsentRecord.consent_status == "granted",
+        )
+    ).first()
+    if not consent:
+        consent = ConsentRecord(
+            user_id=user_a.id,
+            consent_type="external_document_sharing",
+            consent_status="granted",
+            policy_version="1.0",
+        )
+        db.add(consent)
+        db.commit()
+
+    doc = cdoc_svc.create_document(
+        db,
+        user_id=user_a.id,
+        document_name="Audit DL Test Mock",
+        category="driving_licence",
+        document_type="driving_licence",
+        file_name="audit_dl_mock.pdf",
+        content=b"%PDF-1.4 mock dl test",
+        document_number="DL-1420119988776",
+    )
+    doc_id = doc["id"]
+    try:
+        res = verify_svc.DigiLockerAdapter.verify_identity_document(
+            db, user_id=user_a.id, document_id=doc_id, consent_record_id=consent.id, trust_mode="MOCK"
+        )
+        assert res["status"] == "pending"
+        assert res["provider"] == "MOCK_DIGILOCKER"
+        assert res["simulated"] is True
+        assert res["verified_at"] is None
+
+        db_doc = db.get(CentralDocument, doc_id)
+        assert db_doc.verification_status == "pending"
+        assert db_doc.verification_provider == "MOCK_DIGILOCKER"
+        assert db_doc.verified_at is None
+    finally:
+        raw_doc = db.get(CentralDocument, doc_id)
+        if raw_doc:
+            db.delete(raw_doc)
+            db.commit()
+
+
+def test_mock_vahan_success_cannot_mark_vehicle_verified(db, user_a):
+    """Test 2: Mock VAHAN success cannot mark vehicle verified (status is pending)."""
+    test_veh = Vehicle(
+        user_id=user_a.id,
+        registration_number="KA01TEST1234",
+        manufacturer="Tata",
+        model="Nexon EV",
+        category="Four Wheeler",
+        fuel_type="Electric",
+        verification_status="unverified",
+        is_active=True,
+    )
+    db.add(test_veh)
+    db.commit()
+    db.refresh(test_veh)
+    v_id = test_veh.id
+
+    try:
+        res = verify_svc.VahanAdapter.verify_vehicle(
+            db, user_id=user_a.id, vehicle_id=v_id, trust_mode="MOCK"
+        )
+        assert res["status"] == "pending"
+        assert res["provider"] == "MOCK_VAHAN_PARIVAHAN"
+        assert res["simulated"] is True
+        assert res["verified_at"] is None
+
+        db.refresh(test_veh)
+        assert test_veh.verification_status == "pending"
+        assert test_veh.verification_provider == "MOCK_VAHAN_PARIVAHAN"
+        assert test_veh.verified_at is None
+    finally:
+        raw_v = db.get(Vehicle, v_id)
+        if raw_v:
+            db.delete(raw_v)
+            db.commit()
+
+
+def test_mock_insurance_success_cannot_mark_policy_verified(db, user_a):
+    """Test 3: Mock insurance success cannot mark policy verified (status is pending)."""
+    veh = db.scalars(select(Vehicle).where(Vehicle.user_id == user_a.id, Vehicle.is_active.is_(True))).first()
+    assert veh is not None
+
+    pol = VehicleInsurancePolicy(
+        vehicle_id=veh.id,
+        provider="ICICI Lombard",
+        policy_number="POL-TEST-998877",
+        policy_type="Comprehensive",
+        is_current_policy=True,
+        policy_status="active",
+    )
+    db.add(pol)
+    db.commit()
+    db.refresh(pol)
+    p_id = pol.id
+
+    try:
+        res = verify_svc.InsuranceAdapter.verify_policy(
+            db, user_id=user_a.id, policy_id=p_id, trust_mode="MOCK"
+        )
+        assert res["status"] == "pending"
+        assert res["provider"] == "MOCK_IIB_INSURANCE"
+        assert res["simulated"] is True
+        assert res["verified_at"] is None
+
+        vrec = db.scalars(
+            select(VerificationRecord)
+            .where(VerificationRecord.entity_type == "VEHICLE_INSURANCE", VerificationRecord.entity_id == p_id)
+            .order_by(VerificationRecord.created_at.desc())
+        ).first()
+        assert vrec is not None
+        assert vrec.status == "PENDING"
+        assert vrec.verified_at is None
+    finally:
+        raw_p = db.get(VehicleInsurancePolicy, p_id)
+        if raw_p:
+            db.delete(raw_p)
+            db.commit()
+
+
+def test_sandbox_success_cannot_grant_production_verification(db, user_a):
+    """Test 4: Sandbox success cannot grant production verification."""
+    test_veh = Vehicle(
+        user_id=user_a.id,
+        registration_number="KA02SANDBOX99",
+        manufacturer="Hyundai",
+        model="Creta",
+        category="Four Wheeler",
+        fuel_type="Diesel",
+        verification_status="unverified",
+        is_active=True,
+    )
+    db.add(test_veh)
+    db.commit()
+    db.refresh(test_veh)
+    v_id = test_veh.id
+
+    try:
+        res = verify_svc.VahanAdapter.verify_vehicle(
+            db, user_id=user_a.id, vehicle_id=v_id, trust_mode="SANDBOX"
+        )
+        assert res["status"] == "pending"
+        assert res["provider"] == "SANDBOX_VAHAN_PARIVAHAN"
+        assert res["sandbox"] is True
+        assert res["verified_at"] is None
+
+        db.refresh(test_veh)
+        assert test_veh.verification_status == "pending"
+        assert test_veh.verification_provider == "SANDBOX_VAHAN_PARIVAHAN"
+        assert test_veh.verified_at is None
+    finally:
+        raw_v = db.get(Vehicle, v_id)
+        if raw_v:
+            db.delete(raw_v)
+            db.commit()
+
+
+def test_trusted_production_provider_success_with_credentials(db, user_a):
+    """Test 5: Trusted production provider success can grant verification when configured."""
+    prev_key = config.VAHAN_API_KEY
+    config.VAHAN_API_KEY = "live-prod-vahan-api-key-test"
+
+    test_veh = Vehicle(
+        user_id=user_a.id,
+        registration_number="KA03PROD5678",
+        manufacturer="Toyota",
+        model="Innova Hycross",
+        category="Four Wheeler",
+        fuel_type="Hybrid",
+        verification_status="unverified",
+        is_active=True,
+    )
+    db.add(test_veh)
+    db.commit()
+    db.refresh(test_veh)
+    v_id = test_veh.id
+
+    try:
+        res = verify_svc.VahanAdapter.verify_vehicle(
+            db, user_id=user_a.id, vehicle_id=v_id, trust_mode="PRODUCTION"
+        )
+        assert res["status"] == "verified"
+        assert res["provider"] == "VAHAN_PARIVAHAN"
+        assert res["trust_mode"] == "PRODUCTION"
+        assert res["verified_at"] is not None
+
+        db.refresh(test_veh)
+        assert test_veh.verification_status == "verified"
+        assert test_veh.verification_provider == "VAHAN_PARIVAHAN"
+        assert test_veh.verified_at is not None
+    finally:
+        config.VAHAN_API_KEY = prev_key
+        raw_v = db.get(Vehicle, v_id)
+        if raw_v:
+            db.delete(raw_v)
+            db.commit()
+
+
+def test_missing_production_credentials_fail_closed(db, user_a):
+    """Test 6: Missing production credentials fail closed with ServiceError."""
+    prev_key = config.VAHAN_API_KEY
+    config.VAHAN_API_KEY = ""
+
+    test_veh = Vehicle(
+        user_id=user_a.id,
+        registration_number="KA04FAIL1234",
+        manufacturer="Maruti",
+        model="Swift",
+        category="Four Wheeler",
+        fuel_type="Petrol",
+        verification_status="unverified",
+        is_active=True,
+    )
+    db.add(test_veh)
+    db.commit()
+    db.refresh(test_veh)
+    v_id = test_veh.id
+
+    try:
+        with pytest.raises(ServiceError) as exc:
+            verify_svc.VahanAdapter.verify_vehicle(
+                db, user_id=user_a.id, vehicle_id=v_id, trust_mode="PRODUCTION"
+            )
+        assert "Missing production credentials" in str(exc.value)
+
+        db.refresh(test_veh)
+        assert test_veh.verification_status == "unverified"
+        assert test_veh.verified_at is None
+    finally:
+        config.VAHAN_API_KEY = prev_key
+        raw_v = db.get(Vehicle, v_id)
+        if raw_v:
+            db.delete(raw_v)
+            db.commit()
+
+
+def test_provider_errors_never_grant_verification(db, user_a):
+    """Test 7: Provider timeout, malformed response, and provider errors never grant verification."""
+    test_veh = Vehicle(
+        user_id=user_a.id,
+        registration_number="DL00XX0000",
+        manufacturer="Unknown",
+        model="Unknown",
+        category="Four Wheeler",
+        fuel_type="Petrol",
+        verification_status="unverified",
+        is_active=True,
+    )
+    db.add(test_veh)
+    db.commit()
+    db.refresh(test_veh)
+    v_id = test_veh.id
+
+    try:
+        res = verify_svc.VahanAdapter.verify_vehicle(
+            db, user_id=user_a.id, vehicle_id=v_id, trust_mode="MOCK"
+        )
+        assert res["status"] == "failed"
+        assert res["verified_at"] is None
+
+        db.refresh(test_veh)
+        assert test_veh.verification_status == "failed"
+        assert test_veh.verified_at is None
+    finally:
+        raw_v = db.get(Vehicle, v_id)
+        if raw_v:
+            db.delete(raw_v)
+            db.commit()
+
+
+def test_direct_api_attempts_to_set_verified_are_rejected(db, user_a):
+    """Test 8: Direct API attempts to set verified are rejected or ignored, never applied."""
+    doc = cdoc_svc.create_document(
+        db,
+        user_id=user_a.id,
+        document_name="Tamper Direct Doc",
+        category="personal",
+        document_type="passport",
+        file_name="tamper_doc.pdf",
+        content=b"%PDF-1.4 tamper test",
+    )
+    doc_id = doc["id"]
+    try:
+        cdoc_svc.update_document(
+            db,
+            user_id=user_a.id,
+            doc_id=doc_id,
+            data={"verification_status": "verified", "notes": "Hacked verification"},
+        )
+        db_doc = db.get(CentralDocument, doc_id)
+        assert db_doc.verification_status == "unverified"
+        assert db_doc.verified_at is None
+    finally:
+        raw_doc = db.get(CentralDocument, doc_id)
+        if raw_doc:
+            db.delete(raw_doc)
+            db.commit()
+
+
+def test_untrusted_adapter_cannot_bypass_status_transition(db, user_a):
+    """Test 9: Untrusted adapter cannot bypass transition_verification_status."""
+    test_veh = Vehicle(
+        user_id=user_a.id,
+        registration_number="KA05BYPASS00",
+        manufacturer="Honda",
+        model="City",
+        category="Four Wheeler",
+        fuel_type="Petrol",
+        verification_status="unverified",
+        is_active=True,
+    )
+    db.add(test_veh)
+    db.commit()
+    db.refresh(test_veh)
+    v_id = test_veh.id
+
+    try:
+        with pytest.raises(ServiceError) as exc:
+            verify_svc.transition_verification_status(
+                db,
+                entity_type="VEHICLE_RC",
+                entity=test_veh,
+                user_id=user_a.id,
+                requested_status="verified",
+                provider_name="SHADY_UNVERIFIED_ADAPTER",
+                trust_mode="PRODUCTION",
+            )
+        assert "Untrusted or unconfigured" in str(exc.value)
+        db.refresh(test_veh)
+        assert test_veh.verification_status == "unverified"
+    finally:
+        raw_v = db.get(Vehicle, v_id)
+        if raw_v:
+            db.delete(raw_v)
+            db.commit()
+
+
+def test_changing_vehicle_registration_invalidates_verification(db, user_a):
+    """Test 10 & 11: Changing vehicle registration invalidates verification, clearing provider and verified_at."""
+    test_veh = Vehicle(
+        user_id=user_a.id,
+        registration_number="KA01MJ4012",
+        manufacturer="Toyota",
+        model="Fortuner",
+        category="Four Wheeler",
+        fuel_type="Diesel",
+        verification_status="verified",
+        verification_provider="VAHAN_PARIVAHAN",
+        verification_reference_id="VAHAN-PREV-REF-12345",
+        verified_at=utcnow(),
+        is_active=True,
+    )
+    db.add(test_veh)
+    db.commit()
+    db.refresh(test_veh)
+    v_id = test_veh.id
+
+    try:
+        updated = vehicle_svc.update_vehicle(
+            db,
+            user_id=user_a.id,
+            vehicle_id=v_id,
+            data={"registration_number": "KA04XY9999"},
+        )
+
+        db.refresh(test_veh)
+        assert test_veh.registration_number == "KA04XY9999"
+        assert test_veh.verification_status == "unverified"
+        assert test_veh.verification_provider is None
+        assert test_veh.verification_reference_id is None
+        assert test_veh.verified_at is None
+        assert "Re-verification required" in (test_veh.verification_failure_reason or "")
+    finally:
+        raw_v = db.get(Vehicle, v_id)
+        if raw_v:
+            db.delete(raw_v)
+            db.commit()
+
+
+def test_same_normalized_registration_preserves_verification(db, user_a):
+    """Test 12: Submitting same normalized registration with harmless formatting preserves verification."""
+    orig_time = utcnow()
+    test_veh = Vehicle(
+        user_id=user_a.id,
+        registration_number="KA01MJ4012",
+        manufacturer="Toyota",
+        model="Camry",
+        category="Four Wheeler",
+        fuel_type="Hybrid",
+        verification_status="verified",
+        verification_provider="VAHAN_PARIVAHAN",
+        verification_reference_id="VAHAN-PRESERVE-123",
+        verified_at=orig_time,
+        is_active=True,
+    )
+    db.add(test_veh)
+    db.commit()
+    db.refresh(test_veh)
+    v_id = test_veh.id
+
+    try:
+        updated = vehicle_svc.update_vehicle(
+            db,
+            user_id=user_a.id,
+            vehicle_id=v_id,
+            data={"registration_number": "ka 01 mj-4012"},
+        )
+
+        db.refresh(test_veh)
+        assert test_veh.registration_number == "KA 01 MJ-4012"
+        assert test_veh.verification_status == "verified"
+        assert test_veh.verification_provider == "VAHAN_PARIVAHAN"
+        assert test_veh.verification_reference_id == "VAHAN-PRESERVE-123"
+        assert test_veh.verified_at is not None
+    finally:
+        raw_v = db.get(Vehicle, v_id)
+        if raw_v:
+            db.delete(raw_v)
+            db.commit()
+
+
+def test_failed_vehicle_update_does_not_leave_inconsistent_metadata(db, user_a):
+    """Test 13: Failed update does not leave inconsistent verification metadata."""
+    orig_time = utcnow()
+    test_veh = Vehicle(
+        user_id=user_a.id,
+        registration_number="KA01SAFE1111",
+        manufacturer="Honda",
+        model="Amaze",
+        category="Four Wheeler",
+        fuel_type="Petrol",
+        verification_status="verified",
+        verification_provider="VAHAN_PARIVAHAN",
+        verification_reference_id="VAHAN-SAFE-111",
+        verified_at=orig_time,
+        is_active=True,
+    )
+    db.add(test_veh)
+
+    other_veh = Vehicle(
+        user_id=user_a.id,
+        registration_number="KA01DUPLICATE",
+        manufacturer="Hyundai",
+        model="i20",
+        category="Four Wheeler",
+        fuel_type="Petrol",
+        is_active=True,
+    )
+    db.add(other_veh)
+    db.commit()
+    db.refresh(test_veh)
+    db.refresh(other_veh)
+
+    try:
+        with pytest.raises(ServiceError) as exc:
+            vehicle_svc.update_vehicle(
+                db,
+                user_id=user_a.id,
+                vehicle_id=test_veh.id,
+                data={"registration_number": "KA 01 DUPLICATE"},
+            )
+        assert "already registered" in str(exc.value)
+
+        db.refresh(test_veh)
+        assert test_veh.registration_number == "KA01SAFE1111"
+        assert test_veh.verification_status == "verified"
+        assert test_veh.verification_provider == "VAHAN_PARIVAHAN"
+        assert test_veh.verification_reference_id == "VAHAN-SAFE-111"
+    finally:
+        for v in (test_veh, other_veh):
+            raw = db.get(Vehicle, v.id)
+            if raw:
+                db.delete(raw)
+        db.commit()
+
+
+def test_cross_user_vehicle_modification_rejected(db, user_a, user_b):
+    """Test 14: Cross-user vehicle modification/invalidation rejected with PermissionDenied."""
+    veh_a = db.scalars(select(Vehicle).where(Vehicle.user_id == user_a.id, Vehicle.is_active.is_(True))).first()
+    assert veh_a is not None
+
+    with pytest.raises(PermissionDenied) as exc:
+        vehicle_svc.update_vehicle(
+            db,
+            user_id=user_b.id,
+            vehicle_id=veh_a.id,
+            data={"registration_number": "KA01HACK0000"},
+        )
+    assert "own this vehicle" in str(exc.value).lower()
