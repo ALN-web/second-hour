@@ -36,6 +36,13 @@ from app.db import (
 )
 from app.services.audit import record_audit
 from app.services.common import PermissionDenied, ServiceError, iso
+from app.services.otp_delivery import (
+    DeliveryResult,
+    OtpDeliveryStatus,
+    dispatch_email_otp,
+    dispatch_sms_otp,
+    normalize_indian_phone,
+)
 
 logger = logging.getLogger("secondhour.verification")
 
@@ -198,6 +205,12 @@ def request_otp(
         else:
             dest = expected_contact
 
+        # Normalize phone number to canonical E.164 (+91XXXXXXXXXX)
+        try:
+            dest = normalize_indian_phone(dest)
+        except ValueError as val_err:
+            raise ServiceError(str(val_err))
+
     if purpose_clean == "step_up":
         if channel_clean == "email" and not user.email_verified:
             raise ServiceError("User email must be verified prior to performing step-up verification.")
@@ -217,7 +230,7 @@ def request_otp(
     if recent_active:
         wait_seconds = int((_normalize_dt(recent_active.created_at) + timedelta(seconds=OTP_RESEND_COOLDOWN_SECONDS) - _normalize_dt(utcnow())).total_seconds())
         if wait_seconds > 0:
-            raise ServiceError(f"Please wait {wait_seconds} seconds before requesting another verification code.")
+            raise ServiceError(f"Too many OTP requests. Please wait {wait_seconds} seconds before requesting another verification code.")
 
     # Invalidate previous unused codes for this (user_id, channel, purpose)
     for prior in db.scalars(
@@ -256,6 +269,7 @@ def request_otp(
         is_used=False,
         expires_at=expires_at,
         created_at=utcnow(),
+        delivery_status=OtpDeliveryStatus.GENERATED,
     )
     db.add(otp_record)
 
@@ -271,39 +285,89 @@ def request_otp(
         verification_reference_id=f"OTP-{otp_record.id}",
         retry_count=0,
         expires_at=expires_at,
-        verified_metadata={"target_masked": _mask_identifier(dest), "channel": channel_clean, "purpose": purpose_clean},
+        verified_metadata={
+            "target_masked": _mask_identifier(dest),
+            "channel": channel_clean,
+            "purpose": purpose_clean,
+            "delivery_status": OtpDeliveryStatus.REQUESTED,
+        },
         ip_address=ip_address,
         user_agent=user_agent,
     )
     db.add(vrec)
 
-    # 4. Audit entry
+    # 4. Attempt real provider delivery (fail closed upon provider rejection / missing credentials)
+    otp_record.delivery_status = OtpDeliveryStatus.REQUESTED
+
+    if channel_clean == "email":
+        delivery_res = dispatch_email_otp(dest, raw_code, expiry_minutes=OTP_VALIDITY_MINUTES, purpose=purpose_clean)
+    else:
+        delivery_res = dispatch_sms_otp(dest, raw_code, expiry_minutes=OTP_VALIDITY_MINUTES, purpose=purpose_clean)
+
+    if delivery_res.success:
+        otp_record.delivery_status = OtpDeliveryStatus.ACCEPTED
+        otp_record.delivery_provider = delivery_res.provider
+        otp_record.delivery_reference_id = delivery_res.reference_id
+
+        vrec.verification_reference_id = delivery_res.reference_id or f"OTP-{otp_record.id}"
+        vrec.verified_metadata["delivery_status"] = OtpDeliveryStatus.ACCEPTED
+        vrec.verified_metadata["delivery_provider"] = delivery_res.provider
+        vrec.verified_metadata["delivery_reference_id"] = delivery_res.reference_id
+
+        _audit(
+            db,
+            actor_id=user_id,
+            action_type=f"request_{channel_clean}_otp",
+            resource_type="user",
+            resource_id=user_id,
+            result_summary=f"Dispatched {channel_clean.upper()} OTP ({purpose_clean}) to {_mask_identifier(dest)} via {delivery_res.provider} (ref: {delivery_res.reference_id})",
+            metadata={"channel": channel_clean, "purpose": purpose_clean, "otp_id": otp_record.id, "provider": delivery_res.provider, "reference_id": delivery_res.reference_id},
+        )
+        db.commit()
+
+        resp: dict[str, Any] = {
+            "status": "otp_sent",
+            "channel": channel_clean,
+            "purpose": purpose_clean,
+            "target": _mask_identifier(dest),
+            "delivery_status": "accepted_by_provider",
+            "delivery_provider": delivery_res.provider,
+            "delivery_reference_id": delivery_res.reference_id,
+            "expires_in_seconds": OTP_VALIDITY_MINUTES * 60,
+            "message": "OTP sent successfully.",
+        }
+        # Demo code is ONLY returned if DEMO_MODE is explicitly enabled (never in production)
+        if config.DEMO_MODE:
+            resp["demo_code"] = raw_code
+            resp["message"] = f"Verification passcode: {raw_code} dispatched to {_mask_identifier(dest)}."
+            logger.info("[DEMO_MODE] Generated OTP for user %s: %s", user_id, raw_code)
+
+        return resp
+
+    # Delivery failed: invalidate code and record failure reason
+    otp_record.delivery_status = OtpDeliveryStatus.FAILED
+    otp_record.delivery_provider = delivery_res.provider
+    otp_record.delivery_error = delivery_res.error_message
+    otp_record.is_used = True  # Invalidate undelivered OTP immediately
+
+    vrec.status = "FAILED"
+    vrec.failure_reason = delivery_res.error_message
+    vrec.verified_metadata["delivery_status"] = OtpDeliveryStatus.FAILED
+    vrec.verified_metadata["delivery_error"] = delivery_res.error_message
+
     _audit(
         db,
         actor_id=user_id,
         action_type=f"request_{channel_clean}_otp",
         resource_type="user",
         resource_id=user_id,
-        result_summary=f"Dispatched {channel_clean.upper()} OTP ({purpose_clean}) to {_mask_identifier(dest)}",
-        metadata={"channel": channel_clean, "purpose": purpose_clean, "otp_id": otp_record.id},
+        action_outcome="failure",
+        result_summary=f"Failed to dispatch {channel_clean.upper()} OTP to {_mask_identifier(dest)}: {delivery_res.error_message}",
+        metadata={"channel": channel_clean, "purpose": purpose_clean, "otp_id": otp_record.id, "error": delivery_res.error_message},
     )
     db.commit()
 
-    resp: dict[str, Any] = {
-        "status": "otp_sent",
-        "channel": channel_clean,
-        "purpose": purpose_clean,
-        "target": _mask_identifier(dest),
-        "expires_in_seconds": OTP_VALIDITY_MINUTES * 60,
-        "message": f"Verification passcode dispatched to {_mask_identifier(dest)}.",
-    }
-    # Demo code is ONLY returned if DEMO_MODE is explicitly enabled (never in production)
-    if config.DEMO_MODE:
-        resp["demo_code"] = raw_code
-        resp["message"] = f"Verification passcode: {raw_code} dispatched to {_mask_identifier(dest)}."
-        logger.info("[DEMO_MODE] Generated OTP for user %s: %s", user_id, raw_code)
-
-    return resp
+    raise ServiceError(delivery_res.user_message)
 
 
 def confirm_otp(
@@ -344,11 +408,13 @@ def confirm_otp(
 
     if _normalize_dt(record.expires_at) < _normalize_dt(utcnow()):
         record.is_used = True
+        record.delivery_status = OtpDeliveryStatus.EXPIRED
         db.commit()
         raise ServiceError("Verification code has expired. Please request a new one.")
 
     if record.attempts >= record.max_attempts:
         record.is_used = True
+        record.delivery_status = OtpDeliveryStatus.FAILED
         db.commit()
         raise ServiceError("Maximum verification attempts exceeded. Please request a new code.")
 
@@ -373,13 +439,15 @@ def confirm_otp(
         remaining = record.max_attempts - record.attempts
         if remaining <= 0:
             record.is_used = True
+            record.delivery_status = OtpDeliveryStatus.FAILED
             db.commit()
             raise ServiceError("Maximum verification attempts exceeded. Code invalidated.")
         db.commit()
         raise ServiceError(f"Invalid verification code. {remaining} attempt(s) remaining.")
 
-    # Code is valid - mark as used immediately to prevent replay
+    # Code is valid - mark as used and verified immediately to prevent replay
     record.is_used = True
+    record.delivery_status = OtpDeliveryStatus.VERIFIED
 
     # Lock user row to apply verified status or pending contact change
     user = db.scalars(select(User).where(User.id == user_id).with_for_update()).first()
