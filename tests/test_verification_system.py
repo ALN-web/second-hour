@@ -79,23 +79,23 @@ def test_otp_request_and_salted_hash_storage(db, test_user):
 
 
 def test_otp_confirm_success(db, test_user):
-    """Verify correct OTP confirms identity and updates user verification status."""
-    db.query(OtpVerification).filter(OtpVerification.user_id == test_user.id, OtpVerification.channel == "phone").delete()
+    """Verify correct OTP confirms identity and updates user verification status via email."""
+    db.query(OtpVerification).filter(OtpVerification.user_id == test_user.id, OtpVerification.channel == "email").delete()
     db.commit()
 
     prev_demo = config.DEMO_MODE
     config.DEMO_MODE = True
     try:
-        res = verify_svc.request_otp(db, test_user.id, channel="phone", target=test_user.phone)
+        res = verify_svc.request_otp(db, test_user.id, channel="email", target=test_user.email)
         code = res.get("demo_code", "123456")
 
-        confirm_res = verify_svc.confirm_otp(db, test_user.id, channel="phone", otp_code=code)
+        confirm_res = verify_svc.confirm_otp(db, test_user.id, channel="email", otp_code=code)
         assert confirm_res["status"] == "verified"
-        assert confirm_res["channel"] == "phone"
+        assert confirm_res["channel"] == "email"
 
         # Refresh user
         user = db.get(User, test_user.id)
-        assert user.phone_verified is True
+        assert user.email_verified is True
     finally:
         config.DEMO_MODE = prev_demo
 

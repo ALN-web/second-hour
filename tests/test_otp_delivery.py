@@ -337,39 +337,22 @@ def test_request_otp_email_triggers_delivery(db, test_user, monkeypatch):
         assert otp_rec.delivery_reference_id == "SMTP-test-ref-123"
 
 
-def test_request_otp_sms_triggers_delivery(db, test_user, monkeypatch):
-    """Requirement 2 & 3: OTP generation triggers SMS adapter and persists provider reference."""
-    monkeypatch.setattr(config, "SMS_PROVIDER", "TWILIO")
+def test_request_otp_sms_disabled_safely(db, test_user, monkeypatch):
+    """Requirement 2 & 3: SMS OTP delivery is temporarily disabled with clean user message."""
     monkeypatch.setattr(config, "DEMO_MODE", False)
 
     db.query(OtpVerification).filter(OtpVerification.user_id == test_user.id).delete()
     db.commit()
 
-    mock_delivery_res = DeliveryResult(
-        success=True,
-        provider="TWILIO",
-        status=OtpDeliveryStatus.ACCEPTED,
-        reference_id="SM-twilio-test-sid",
-        user_message="OTP sent successfully.",
-    )
+    with pytest.raises(ServiceError) as exc:
+        verify_svc.request_otp(db, test_user.id, channel="phone", target=test_user.phone, purpose="phone_verify")
+    assert "SMS verification is temporarily disabled" in str(exc.value)
 
-    with patch("app.services.verification.dispatch_sms_otp", return_value=mock_delivery_res) as mock_dispatch:
-        res = verify_svc.request_otp(db, test_user.id, channel="phone", target=test_user.phone, purpose="phone_verify")
-
-        assert res["status"] == "otp_sent"
-        assert res["delivery_status"] == "accepted_by_provider"
-        assert res["delivery_provider"] == "TWILIO"
-        assert res["delivery_reference_id"] == "SM-twilio-test-sid"
-
-        mock_dispatch.assert_called_once()
-
-        # Check VerificationRecord
-        vrec = db.scalars(
-            select(VerificationRecord).where(VerificationRecord.user_id == test_user.id).order_by(VerificationRecord.created_at.desc())
-        ).first()
-        assert vrec is not None
-        assert vrec.verification_reference_id == "SM-twilio-test-sid"
-        assert vrec.verified_metadata["delivery_status"] == OtpDeliveryStatus.ACCEPTED
+    # Verify dispatch_sms_otp directly returns disabled status
+    res = dispatch_sms_otp(test_user.phone, "123456")
+    assert res.success is False
+    assert res.error_code == "SMS_DISABLED"
+    assert "SMS verification is temporarily disabled" in res.user_message
 
 
 def test_request_otp_provider_rejection_handled_safely(db, test_user, monkeypatch):
@@ -381,16 +364,16 @@ def test_request_otp_provider_rejection_handled_safely(db, test_user, monkeypatc
 
     mock_failure = DeliveryResult(
         success=False,
-        provider="TWILIO",
+        provider="RESEND",
         status=OtpDeliveryStatus.FAILED,
-        error_code="TWILIO_21608",
-        error_message="The number is unverified in trial account.",
+        error_code="RESEND_422",
+        error_message="Invalid recipient address.",
         user_message="Unable to send OTP. Please try again.",
     )
 
-    with patch("app.services.verification.dispatch_sms_otp", return_value=mock_failure):
+    with patch("app.services.verification.dispatch_email_otp", return_value=mock_failure):
         with pytest.raises(ServiceError) as exc:
-            verify_svc.request_otp(db, test_user.id, channel="phone", target=test_user.phone)
+            verify_svc.request_otp(db, test_user.id, channel="email", target=test_user.email)
         assert "Unable to send OTP" in str(exc.value)
 
         # Confirm OTP was invalidated in DB and not left active
@@ -400,7 +383,7 @@ def test_request_otp_provider_rejection_handled_safely(db, test_user, monkeypatc
         assert otp_rec is not None
         assert otp_rec.delivery_status == OtpDeliveryStatus.FAILED
         assert otp_rec.is_used is True  # Undelivered code invalidated
-        assert otp_rec.delivery_error == "The number is unverified in trial account."
+        assert otp_rec.delivery_error == "Invalid recipient address."
 
 
 def test_request_otp_provider_timeout_handled_safely(db, test_user, monkeypatch):
@@ -430,6 +413,7 @@ def test_missing_credentials_fail_safely(db, test_user, monkeypatch):
     monkeypatch.setattr(config, "DEMO_MODE", False)
     monkeypatch.setattr(config, "EMAIL_PROVIDER", "SMTP")
     monkeypatch.setattr(config, "SMTP_HOST", "")  # Empty SMTP host
+    monkeypatch.setattr(config, "RESEND_API_KEY", "")
 
     db.query(OtpVerification).filter(OtpVerification.user_id == test_user.id).delete()
     db.commit()

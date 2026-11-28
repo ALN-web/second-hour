@@ -142,7 +142,7 @@ def test_correct_email_verification(db, user_a):
 
 
 def test_correct_phone_verification(db, user_a):
-    """Verify correct OTP confirms registered phone and updates phone_verified to True."""
+    """Verify phone OTP request is safely rejected while SMS verification is temporarily disabled."""
     prev_demo = config.DEMO_MODE
     config.DEMO_MODE = True
     try:
@@ -152,15 +152,9 @@ def test_correct_phone_verification(db, user_a):
         ).delete()
         db.commit()
 
-        res = verify_svc.request_otp(db, user_a.id, channel="phone", target=user_a.phone, purpose="phone_verify")
-        code = res.get("demo_code", "123456")
-
-        conf = verify_svc.confirm_otp(db, user_a.id, channel="phone", otp_code=code, purpose="phone_verify")
-        assert conf["status"] == "verified"
-        assert conf["channel"] == "phone"
-
-        db.refresh(user_a)
-        assert user_a.phone_verified is True
+        with pytest.raises(ServiceError) as exc:
+            verify_svc.request_otp(db, user_a.id, channel="phone", target=user_a.phone, purpose="phone_verify")
+        assert "SMS verification is temporarily disabled" in str(exc.value)
     finally:
         config.DEMO_MODE = prev_demo
 
