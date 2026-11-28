@@ -267,8 +267,112 @@ When a vehicle's registration number is modified in `update_vehicle`:
 
 | Provider Adapter | Target Entity | Auth / Verification Mechanism | Current Implementation Status |
 | :--- | :--- | :--- | :--- |
-| **DigiLockerAdapter** | Driving Licence / Identity Doc | OAuth 2.0 PKCE / Issued XML | Stubbed/Mock (production requires client credentials) |
+| **DigiLockerAdapter** | Driving Licence / Identity Doc | OAuth 2.0 PKCE / Issued XML | **Implemented (OAuth 2.0 PKCE & Encrypted Tokens)**; production ready with live MeitY credentials |
 | **VahanAdapter** | Vehicle RC | VAHAN 4.0 API Match | Stubbed/Mock (production requires VAHAN API key) |
 | **InsuranceAdapter**| Vehicle Insurance Policy | IIB / Insurer Registry API | Stubbed/Mock (production requires IIB API key) |
 | **OtpVerification** | User Email & Phone | Keyed HMAC-SHA256 OTP | **Live Implementation** (fail-closed demo mode, HMAC-secured) |
 
+
+
+---
+
+## 11. DigiLocker OAuth 2.0 PKCE Architecture & Security Integration
+
+### 11.1. Architecture & Protocol Overview (RFC 7636 S256)
+
+Second Hour implements the DigiLocker institutional gateway using the standard OAuth 2.0 Authorization Code Grant enhanced with Proof Key for Code Exchange (PKCE, RFC 7636) using the `S256` code challenge method.
+
+```
+┌───────────┐                ┌──────────────┐                 ┌─────────────────────┐
+│  Browser  │                │ Second Hour  │                 │ DigiLocker Gateway  │
+│  (Client) │                │ Backend API  │                 │   (MeitY / NIC)     │
+└─────┬─────┘                └──────┬───────┘                 └──────────┬──────────┘
+      │                             │                                    │
+      │ 1. POST /initiate           │                                    │
+      ├────────────────────────────>│ Generate PKCE (verifier, S256)     │
+      │                             │ Encrypt verifier in DB             │
+      │ 2. Return auth_url & state  │ Persist single-use state record    │
+      │<────────────────────────────┤                                    │
+      │                             │                                    │
+      │ 3. Redirect user to DigiLocker Authorization Page               │
+      ├─────────────────────────────────────────────────────────────────>│
+      │                             │                                    │
+      │ 4. User logs in & grants explicit document consent               │
+      │<─────────────────────────────────────────────────────────────────┤
+      │                             │                                    │
+      │ 5. Redirect to Callback (code, state)                            │
+      ├────────────────────────────>│                                    │
+      │                             │ 6. Validate State (bound, unused)  │
+      │                             │    Decrypt stored code_verifier    │
+      │                             │    POST /token (code + verifier)   │
+      │                             │ 7. Exchange Code ─────────────────>│
+      │                             │ 8. Return Access/Refresh Tokens <──┤
+      │                             │ 9. Fernet-encrypt tokens at rest   │
+      │                             │    Atomically upsert connection    │
+      │                             │    Mark state consumed             │
+      │ 10. Return Connection Status│                                    │
+      │<────────────────────────────┤                                    │
+```
+
+---
+
+### 11.2. OAuth State Parameter Security Rules
+
+To protect against Cross-Site Request Forgery (CSRF), authorization code injection, and session fixation attacks, every authorization request enforces strict state parameter security:
+
+1. **Cryptographic Entropy:** Generated via `secrets.token_urlsafe(32)` providing 256 bits of cryptographic entropy.
+2. **Session & User Binding:** Persisted in `digilocker_oauth_states` with explicit foreign key binding to the authenticated `user_id`. Callbacks from mismatched user accounts are immediately rejected with `403 Forbidden` (`PermissionDenied`).
+3. **Strict Single-Use (`is_consumed`):** Checked with database row-level locking (`SELECT ... FOR UPDATE`). State is marked `is_consumed = TRUE` with `consumed_at` timestamp immediately upon arrival. Replayed callback requests fail closed with `400 Bad Request`.
+4. **Time Expiration:** OAuth state tokens are valid for exactly 15 minutes (`expires_at = utcnow() + timedelta(minutes=15)`). Expired state tokens are rejected and marked consumed.
+5. **Denial & Failure Handling:** If a user cancels or DigiLocker returns an error (`error="access_denied"`), the state is marked consumed, the denial is recorded in `audit_log`, and no connection is established.
+
+---
+
+### 11.3. Authenticated Token Storage Format & Key Management
+
+Access tokens, refresh tokens, and transient PKCE code verifiers represent high-privilege credentials and are **never stored in plaintext** in the database:
+
+1. **Cipher Suite:** Authenticated symmetric encryption via `Fernet` (AES-128-CBC with PKCS7 padding, authenticated with HMAC-SHA256, adhering to RFC standard primitives).
+2. **Key Derivation & Rotation:** Server-managed `TOKEN_ENCRYPTION_KEY` configured in the backend environment. If a raw string key is supplied, a deterministic 32-byte key is derived via SHA-256 before URL-safe base64 encoding.
+3. **Zero Frontend / Log Exposure:** Raw access tokens and refresh tokens are strictly restricted to backend service memory during active verification or refresh operations. API responses (`GET /api/verify/digilocker/status`) expose only masked identifiers (e.g. `DL-***-1234`) and expiry timestamps.
+4. **Scrubbing on Disconnection:** Disconnecting a DigiLocker account immediately wipes the encrypted access and refresh tokens (`encrypted_access_token = ""`, `encrypted_refresh_token = NULL`) and marks connection status as `disconnected`.
+
+---
+
+### 11.4. Concurrent Token Refresh Workflow
+
+DigiLocker access tokens expire after a provider-specified duration (typically 3600 seconds):
+
+1. **Automatic Expiry Detection:** The verification engine checks `access_token_expires_at` before querying DigiLocker for document verification.
+2. **Concurrency Safety:** `refresh_digilocker_token()` acquires a PostgreSQL row-level lock (`with_for_update()`) on `user_digilocker_connections` to prevent race conditions when concurrent requests attempt simultaneous token exchanges.
+3. **Token Rotation:** If DigiLocker returns a new refresh token along with the refreshed access token, both are re-encrypted and persisted atomically with updated expiration timestamps.
+
+---
+
+### 11.5. Environment Variables & Callback Configuration
+
+| Variable | Type | Description | Example / Default |
+| :--- | :--- | :--- | :--- |
+| `VERIFICATION_PROVIDER_MODE` | String | Trust execution mode (`MOCK`, `SANDBOX`, `PRODUCTION`) | `MOCK` (local) / `PRODUCTION` |
+| `TOKEN_ENCRYPTION_KEY` | String | 32-byte urlsafe-base64 key for authenticated token encryption | Generate via `app.encryption.generate_encryption_key()` |
+| `DIGILOCKER_CLIENT_ID` | String | Registered DigiLocker Application Client ID | Provided by DigiLocker / API Setu portal |
+| `DIGILOCKER_CLIENT_SECRET` | String | Registered DigiLocker Application Client Secret | Provided by DigiLocker / API Setu portal |
+| `DIGILOCKER_REDIRECT_URI` | URL | Authorized OAuth 2.0 callback URL registered with MeitY | `http://localhost:5173/profile` (local) |
+| `DIGILOCKER_AUTH_URL` | URL | DigiLocker Authorization endpoint | `https://digilocker.meripehchaan.gov.in/public/oauth2/1/authorize` |
+| `DIGILOCKER_TOKEN_URL` | URL | DigiLocker Token Exchange endpoint | `https://digilocker.meripehchaan.gov.in/public/oauth2/1/token` |
+| `DIGILOCKER_REVOKE_URL` | URL | DigiLocker Token Revocation endpoint | `https://digilocker.meripehchaan.gov.in/public/oauth2/1/revoke` |
+| `DIGILOCKER_SCOPES` | String | Requested OAuth 2.0 scopes | `read` |
+
+---
+
+### 11.6. Production Transition Checklist
+
+To transition DigiLocker verification from `MOCK` or `SANDBOX` mode to live `PRODUCTION` mode:
+
+1. **Institutional Registration:** Register Second Hour with MeitY / Digital India Corporation (or an authorized GSP/API Setu partner like Setu/Pine Labs or Signzy).
+2. **Callback Whitelisting:** Register the exact production redirect URI in the DigiLocker Developer Console (e.g., `https://secondhour.in/profile`).
+3. **Set Production Environment Variables:**
+   - Configure `VERIFICATION_PROVIDER_MODE=PRODUCTION`.
+   - Set `DIGILOCKER_CLIENT_ID` and `DIGILOCKER_CLIENT_SECRET`.
+   - Set `TOKEN_ENCRYPTION_KEY` with a cryptographically generated high-entropy key.
+4. **Verification Separation Assurance:** Connecting a DigiLocker account permits document retrieval, but only an authentic institutional registry query transitions a document to `verified`.
