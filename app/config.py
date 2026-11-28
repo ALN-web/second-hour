@@ -55,6 +55,45 @@ if not TOKEN_ENCRYPTION_KEY:
     # In local dev only, provide a deterministic fallback Fernet key
     TOKEN_ENCRYPTION_KEY = "dev-insecure-token-encryption-key-local-only-do-not-use-in-prod-32b="
 
+# Email OTP Delivery Configuration
+EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "SMTP").strip().upper()  # SMTP | RESEND | MOCK | NONE
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "").strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
+SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "1").strip().lower() in ("1", "true", "yes", "on")
+SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "0").strip().lower() in ("1", "true", "yes", "on")
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "no-reply@secondhour.in").strip()
+SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "Second Hour").strip()
+SMTP_TIMEOUT_SECONDS = float(os.getenv("SMTP_TIMEOUT_SECONDS", "10.0"))
+
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", SMTP_FROM_EMAIL).strip()
+
+# SMS OTP Delivery Configuration
+SMS_PROVIDER = os.getenv("SMS_PROVIDER", "TWILIO").strip().upper()  # TWILIO | MSG91 | MOCK | NONE
+SMS_TIMEOUT_SECONDS = float(os.getenv("SMS_TIMEOUT_SECONDS", "10.0"))
+
+# Twilio Configuration
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "").strip()
+TWILIO_MESSAGING_SERVICE_SID = os.getenv("TWILIO_MESSAGING_SERVICE_SID", "").strip()
+
+# MSG91 Configuration (India TRAI DLT Compliant)
+MSG91_AUTH_KEY = os.getenv("MSG91_AUTH_KEY", "").strip()
+MSG91_TEMPLATE_ID = os.getenv("MSG91_TEMPLATE_ID", "").strip()
+MSG91_SENDER_ID = os.getenv("MSG91_SENDER_ID", "SECHOR").strip()
+MSG91_DLT_TE_ID = os.getenv("MSG91_DLT_TE_ID", "").strip()
+MSG91_OTP_URL = os.getenv("MSG91_OTP_URL", "https://control.msg91.com/api/v5/otp").strip()
+
+# Security enforcement: In production/staging, mock delivery providers are strictly forbidden
+if ENVIRONMENT in ("production", "staging", "prod", "stage"):
+    if EMAIL_PROVIDER == "MOCK":
+        raise RuntimeError(f"FATAL SECURITY CONFIGURATION: EMAIL_PROVIDER=MOCK is strictly forbidden in {ENVIRONMENT}!")
+    if SMS_PROVIDER == "MOCK":
+        raise RuntimeError(f"FATAL SECURITY CONFIGURATION: SMS_PROVIDER=MOCK is strictly forbidden in {ENVIRONMENT}!")
+
 # Institutional verification provider execution mode: MOCK | SANDBOX | PRODUCTION (default: MOCK)
 raw_provider_mode = os.getenv("VERIFICATION_PROVIDER_MODE", "MOCK").strip().upper()
 if raw_provider_mode in ("MOCK", "SANDBOX", "PRODUCTION"):
