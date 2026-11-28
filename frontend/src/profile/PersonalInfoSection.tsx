@@ -187,13 +187,12 @@ export function PersonalInfoSection({
                   ✓ Verified
                 </span>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => onOpenVerifyModal('phone')}
-                  className="text-[10px] font-bold text-[#ff7518] hover:underline cursor-pointer"
+                <span
+                  title="SMS OTP verification is temporarily disabled. Please verify via email."
+                  className="text-[10px] font-medium text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-full cursor-help"
                 >
-                  Verify via OTP
-                </button>
+                  SMS Disabled (Use Email)
+                </span>
               )}
             </div>
             {editing ? (

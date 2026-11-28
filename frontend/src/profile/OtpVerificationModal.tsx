@@ -24,10 +24,10 @@ export function OtpVerificationModal({
   const [resendNotice, setResendNotice] = useState<string | null>(null)
   const [devDemoCode, setDevDemoCode] = useState<string | null>(null)
 
-  // Automatically request OTP dispatch when modal opens
+  // Automatically request OTP dispatch when modal opens (email only)
   useEffect(() => {
     let active = true
-    if (isOpen && channel) {
+    if (isOpen && channel === 'email') {
       setOtp('')
       setError(null)
       setResendNotice(null)
@@ -36,7 +36,7 @@ export function OtpVerificationModal({
 
       api('/api/profile/verify/request-otp', {
         method: 'POST',
-        body: { channel },
+        body: { channel: 'email' },
       })
         .then((res) => {
           if (!active) return
@@ -72,7 +72,7 @@ export function OtpVerificationModal({
       setError(null)
       await api('/api/profile/verify/confirm-otp', {
         method: 'POST',
-        body: { channel, otp: otp.trim() },
+        body: { channel: 'email', otp: otp.trim() },
       })
       onSuccess()
       onClose()
@@ -90,7 +90,7 @@ export function OtpVerificationModal({
       setResendNotice(null)
       const res = await api('/api/profile/verify/request-otp', {
         method: 'POST',
-        body: { channel },
+        body: { channel: 'email' },
       })
       if (import.meta.env.DEV && res.demo_code) {
         setDevDemoCode(res.demo_code)
@@ -132,7 +132,31 @@ export function OtpVerificationModal({
         </div>
 
         {/* Content */}
-        <form onSubmit={handleVerify} className="p-6 space-y-4">
+        {channel === 'phone' ? (
+          <div className="p-6 space-y-4">
+            <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 space-y-2">
+              <div className="flex items-center gap-2 font-bold text-amber-800">
+                <svg className="w-5 h-5 text-amber-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <span className="text-sm">SMS OTP Temporarily Disabled</span>
+              </div>
+              <p className="leading-relaxed text-slate-700">
+                SMS verification is temporarily disabled in Second Hour. Please verify your identity using your registered <strong>email address</strong> instead.
+              </p>
+            </div>
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 text-xs font-semibold text-white bg-slate-800 hover:bg-slate-900 rounded-xl transition"
+              >
+                Close & Use Email Verification
+              </button>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={handleVerify} className="p-6 space-y-4">
           <p className="text-xs text-slate-600 leading-relaxed">
             We have dispatched a 6-digit one-time verification passcode to{' '}
             <strong className="text-slate-900">{target}</strong>.
@@ -216,6 +240,7 @@ export function OtpVerificationModal({
             </button>
           </div>
         </form>
+        )}
       </div>
     </div>
   )
