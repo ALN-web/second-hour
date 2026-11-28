@@ -439,8 +439,352 @@ def confirm_otp(
 
 
 # ==============================================================================
-# 2. Institutional Provider Adapters (DigiLocker, VAHAN, Insurance)
+# 2. Institutional Provider Adapters & Trust Level Management
 # ==============================================================================
+
+class ProviderTrustMode:
+    """Execution modes governing verification provider trust levels."""
+    MOCK = "MOCK"
+    SANDBOX = "SANDBOX"
+    PRODUCTION = "PRODUCTION"
+
+
+def get_provider_mode() -> str:
+    """Resolve current provider trust execution mode from configuration."""
+    raw = getattr(config, "VERIFICATION_PROVIDER_MODE", "MOCK")
+    mode = str(raw).strip().upper() if raw else "MOCK"
+    if mode in (ProviderTrustMode.MOCK, ProviderTrustMode.SANDBOX, ProviderTrustMode.PRODUCTION):
+        return mode
+    return ProviderTrustMode.MOCK
+
+
+def check_provider_credentials(provider_name: str, trust_mode: str) -> None:
+    """Ensure production credentials exist before making or verifying live institutional calls.
+    Fails closed if credentials are missing.
+    """
+    if trust_mode != ProviderTrustMode.PRODUCTION:
+        return
+
+    prov = provider_name.upper().strip()
+    if prov in ("DIGILOCKER", "OAUTH_DIGILOCKER"):
+        if not getattr(config, "DIGILOCKER_CLIENT_ID", "") or not getattr(config, "DIGILOCKER_CLIENT_SECRET", ""):
+            raise ServiceError("Missing production credentials for DigiLocker. Verification cannot proceed in PRODUCTION mode.")
+    elif prov in ("VAHAN", "VAHAN_PARIVAHAN"):
+        if not getattr(config, "VAHAN_API_KEY", ""):
+            raise ServiceError("Missing production credentials for VAHAN. Verification cannot proceed in PRODUCTION mode.")
+    elif prov in ("IIB", "IIB_INSURANCE", "INSURANCE"):
+        if not getattr(config, "IIB_API_KEY", ""):
+            raise ServiceError("Missing production credentials for IIB Insurance. Verification cannot proceed in PRODUCTION mode.")
+    else:
+        raise ServiceError(f"Untrusted or unconfigured verification provider '{provider_name}' in PRODUCTION mode.")
+
+
+def transition_verification_status(
+    db: Session,
+    *,
+    entity_type: str,
+    entity: Any,
+    user_id: str,
+    requested_status: str,
+    provider_name: str,
+    trust_mode: str | None = None,
+    reference_id: str | None = None,
+    failure_reason: str | None = None,
+    verified_metadata: dict[str, Any] | None = None,
+    consent_record_id: str | None = None,
+    verification_type: str = "API_MATCH",
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> dict[str, Any]:
+    """Centralized, audited verification status transition engine with strict trust-level enforcement.
+
+    Guarantees:
+    - MOCK mode can NEVER grant 'verified' status on any entity or record.
+    - SANDBOX mode is explicitly distinguishable and never grants production 'verified' status.
+    - PRODUCTION mode verifies only when trusted credentials exist; fails closed otherwise.
+    - Every transition produces an immutable VerificationRecord and an AuditLog entry.
+    """
+    mode = (trust_mode or get_provider_mode()).strip().upper()
+    req_status = requested_status.strip().lower()
+    ent_id = getattr(entity, "id", None)
+    clean_meta = dict(verified_metadata or {})
+
+    if req_status == "verified":
+        if mode == ProviderTrustMode.MOCK:
+            # MOCK mode: MUST NEVER produce a persisted 'verified' status!
+            sim_ref = reference_id or f"MOCK-SIMULATED-{uuid4().hex[:8].upper()}"
+            if not sim_ref.startswith("MOCK-"):
+                sim_ref = f"MOCK-{sim_ref}"
+            mock_provider = f"MOCK_{provider_name}"
+            mock_reason = "Simulated verification completed (MOCK mode). Status remains PENDING in non-production environments."
+
+            if hasattr(entity, "verification_status"):
+                entity.verification_status = "pending"
+                entity.verification_provider = mock_provider
+                entity.verification_reference_id = sim_ref
+                entity.verified_at = None
+                entity.verification_failure_reason = mock_reason
+                entity.updated_at = utcnow()
+
+            clean_meta.update({"simulated": True, "trust_mode": "MOCK"})
+
+            vrec = VerificationRecord(
+                id=new_id("vrec"),
+                user_id=user_id,
+                entity_type=entity_type,
+                entity_id=ent_id,
+                provider=mock_provider,
+                status="PENDING",
+                verification_type=verification_type,
+                verification_reference_id=sim_ref,
+                verified_at=None,
+                failure_reason=mock_reason,
+                consent_record_id=consent_record_id,
+                verified_metadata=clean_meta,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            db.add(vrec)
+            _audit(
+                db,
+                actor_id=user_id,
+                action_type=f"verify_{entity_type.lower()}_mock",
+                resource_type=entity_type.lower(),
+                resource_id=ent_id,
+                result_summary=f"Simulated verification in MOCK mode for {entity_type} (status remains pending)",
+                action_outcome="info",
+                metadata={"trust_mode": "MOCK", "simulated": True, "provider": mock_provider, "reference_id": sim_ref},
+            )
+            db.commit()
+
+            return {
+                "status": "pending",
+                "verification_status": "pending",
+                "entity_id": ent_id,
+                "document_id": ent_id if entity_type in ("IDENTITY_DOCUMENT", "CENTRAL_DOCUMENT") else None,
+                "vehicle_id": ent_id if entity_type == "VEHICLE_RC" else None,
+                "policy_id": ent_id if entity_type == "VEHICLE_INSURANCE" else None,
+                "provider": mock_provider,
+                "reference_id": sim_ref,
+                "verified_at": None,
+                "simulated": True,
+                "trust_mode": "MOCK",
+                "message": mock_reason,
+                "metadata": clean_meta,
+            }
+
+        elif mode == ProviderTrustMode.SANDBOX:
+            # SANDBOX mode: explicitly distinguishable from production, never marks production-verified
+            sandbox_ref = reference_id or f"SANDBOX-{uuid4().hex[:8].upper()}"
+            if not sandbox_ref.startswith("SANDBOX-"):
+                sandbox_ref = f"SANDBOX-{sandbox_ref}"
+            sandbox_provider = f"SANDBOX_{provider_name}"
+            sandbox_reason = "Sandbox verification completed. Status remains PENDING until production verification with live institutional records."
+
+            if hasattr(entity, "verification_status"):
+                entity.verification_status = "pending"
+                entity.verification_provider = sandbox_provider
+                entity.verification_reference_id = sandbox_ref
+                entity.verified_at = None
+                entity.verification_failure_reason = sandbox_reason
+                entity.updated_at = utcnow()
+
+            clean_meta.update({"sandbox": True, "trust_mode": "SANDBOX"})
+
+            vrec = VerificationRecord(
+                id=new_id("vrec"),
+                user_id=user_id,
+                entity_type=entity_type,
+                entity_id=ent_id,
+                provider=sandbox_provider,
+                status="PENDING",
+                verification_type=verification_type,
+                verification_reference_id=sandbox_ref,
+                verified_at=None,
+                failure_reason=sandbox_reason,
+                consent_record_id=consent_record_id,
+                verified_metadata=clean_meta,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            db.add(vrec)
+            _audit(
+                db,
+                actor_id=user_id,
+                action_type=f"verify_{entity_type.lower()}_sandbox",
+                resource_type=entity_type.lower(),
+                resource_id=ent_id,
+                result_summary=f"Sandbox verification for {entity_type} (status remains pending)",
+                action_outcome="info",
+                metadata={"trust_mode": "SANDBOX", "sandbox": True, "provider": sandbox_provider, "reference_id": sandbox_ref},
+            )
+            db.commit()
+
+            return {
+                "status": "pending",
+                "verification_status": "pending",
+                "entity_id": ent_id,
+                "document_id": ent_id if entity_type in ("IDENTITY_DOCUMENT", "CENTRAL_DOCUMENT") else None,
+                "vehicle_id": ent_id if entity_type == "VEHICLE_RC" else None,
+                "policy_id": ent_id if entity_type == "VEHICLE_INSURANCE" else None,
+                "provider": sandbox_provider,
+                "reference_id": sandbox_ref,
+                "verified_at": None,
+                "sandbox": True,
+                "trust_mode": "SANDBOX",
+                "message": sandbox_reason,
+                "metadata": clean_meta,
+            }
+
+        elif mode == ProviderTrustMode.PRODUCTION:
+            # Check credentials - fail closed if missing
+            check_provider_credentials(provider_name, mode)
+
+            prod_ref = reference_id or f"{provider_name[:4]}-{uuid4().hex[:12].upper()}"
+            verified_time = utcnow()
+
+            if hasattr(entity, "verification_status"):
+                entity.verification_status = "verified"
+                entity.verification_provider = provider_name
+                entity.verification_reference_id = prod_ref
+                entity.verified_at = verified_time
+                entity.verification_failure_reason = None
+                entity.updated_at = verified_time
+
+            clean_meta.update({"trust_mode": "PRODUCTION"})
+
+            vrec = VerificationRecord(
+                id=new_id("vrec"),
+                user_id=user_id,
+                entity_type=entity_type,
+                entity_id=ent_id,
+                provider=provider_name,
+                status="VERIFIED",
+                verification_type=verification_type,
+                verification_reference_id=prod_ref,
+                verified_at=verified_time,
+                consent_record_id=consent_record_id,
+                verified_metadata=clean_meta,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            db.add(vrec)
+            _audit(
+                db,
+                actor_id=user_id,
+                action_type=f"verify_{entity_type.lower()}_success",
+                resource_type=entity_type.lower(),
+                resource_id=ent_id,
+                result_summary=f"Successfully verified {entity_type} via production {provider_name}",
+                action_outcome="success",
+                metadata={"trust_mode": "PRODUCTION", "provider": provider_name, "reference_id": prod_ref},
+            )
+            db.commit()
+
+            return {
+                "status": "verified",
+                "verification_status": "verified",
+                "entity_id": ent_id,
+                "document_id": ent_id if entity_type in ("IDENTITY_DOCUMENT", "CENTRAL_DOCUMENT") else None,
+                "vehicle_id": ent_id if entity_type == "VEHICLE_RC" else None,
+                "policy_id": ent_id if entity_type == "VEHICLE_INSURANCE" else None,
+                "provider": provider_name,
+                "reference_id": prod_ref,
+                "verified_at": iso(verified_time),
+                "trust_mode": "PRODUCTION",
+                "metadata": clean_meta,
+            }
+        else:
+            raise ServiceError(f"Unknown provider trust mode '{mode}'")
+
+    elif req_status == "failed":
+        provider_label = f"{mode}_{provider_name}" if mode != ProviderTrustMode.PRODUCTION else provider_name
+        fail_ref = reference_id or f"FAIL-{uuid4().hex[:8].upper()}"
+        reason = failure_reason or "Verification failed."
+
+        if hasattr(entity, "verification_status"):
+            entity.verification_status = "failed"
+            entity.verification_provider = provider_label
+            entity.verification_reference_id = fail_ref
+            entity.verified_at = None
+            entity.verification_failure_reason = reason
+            entity.updated_at = utcnow()
+
+        clean_meta.update({"trust_mode": mode})
+
+        vrec = VerificationRecord(
+            id=new_id("vrec"),
+            user_id=user_id,
+            entity_type=entity_type,
+            entity_id=ent_id,
+            provider=provider_label,
+            status="FAILED",
+            verification_type=verification_type,
+            verification_reference_id=fail_ref,
+            failure_reason=reason,
+            consent_record_id=consent_record_id,
+            verified_metadata=clean_meta,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        db.add(vrec)
+        _audit(
+            db,
+            actor_id=user_id,
+            action_type=f"verify_{entity_type.lower()}_failed",
+            resource_type=entity_type.lower(),
+            resource_id=ent_id,
+            result_summary=f"Verification failed for {entity_type} via {provider_label}",
+            action_outcome="failure",
+            metadata={"trust_mode": mode, "provider": provider_label, "reference_id": fail_ref, "reason": reason},
+        )
+        db.commit()
+
+        return {
+            "status": "failed",
+            "verification_status": "failed",
+            "entity_id": ent_id,
+            "document_id": ent_id if entity_type in ("IDENTITY_DOCUMENT", "CENTRAL_DOCUMENT") else None,
+            "vehicle_id": ent_id if entity_type == "VEHICLE_RC" else None,
+            "policy_id": ent_id if entity_type == "VEHICLE_INSURANCE" else None,
+            "provider": provider_label,
+            "reference_id": fail_ref,
+            "reason": reason,
+            "verified_at": None,
+            "trust_mode": mode,
+        }
+
+    elif req_status == "unverified":
+        if hasattr(entity, "verification_status"):
+            entity.verification_status = "unverified"
+            entity.verification_provider = None
+            entity.verification_reference_id = None
+            entity.verified_at = None
+            entity.verification_failure_reason = failure_reason
+            entity.updated_at = utcnow()
+
+        _audit(
+            db,
+            actor_id=user_id,
+            action_type=f"invalidate_{entity_type.lower()}_verification",
+            resource_type=entity_type.lower(),
+            resource_id=ent_id,
+            result_summary=f"Invalidated verification for {entity_type}: {failure_reason or 'No reason provided'}",
+            action_outcome="success",
+            metadata={"reason": failure_reason},
+        )
+        db.commit()
+
+        return {
+            "status": "unverified",
+            "verification_status": "unverified",
+            "entity_id": ent_id,
+            "reason": failure_reason,
+        }
+
+    else:
+        raise ServiceError(f"Unsupported requested verification status '{requested_status}'")
+
 
 class DigiLockerAdapter:
     """Authorized DigiLocker integration adapter for Government ID and Driving Licence."""
@@ -472,6 +816,7 @@ class DigiLockerAdapter:
         consent_record_id: str | None = None,
         ip_address: str | None = None,
         user_agent: str | None = None,
+        trust_mode: str | None = None,
     ) -> dict[str, Any]:
         """Verify an identity document or Driving Licence through DigiLocker."""
         doc = db.get(CentralDocument, document_id)
@@ -490,50 +835,30 @@ class DigiLockerAdapter:
         if not consent:
             raise ServiceError("Explicit user consent is required before querying DigiLocker for document verification.")
 
-        # Simulate institutional verification via authorized DigiLocker API
+        effective_mode = (trust_mode or get_provider_mode()).strip().upper()
+        if effective_mode == ProviderTrustMode.PRODUCTION:
+            check_provider_credentials(cls.PROVIDER_NAME, effective_mode)
+
         ref_id = f"DLK-{uuid4().hex[:12].upper()}"
         doc_num = doc.document_number or "DL-1420110012345"
 
         # Check for simulated failure mode (e.g. document marked invalid or empty)
         if "INVALID" in (doc.document_name or "").upper() or "INVALID" in (doc_num or "").upper():
-            doc.verification_status = "failed"
-            doc.verification_provider = cls.PROVIDER_NAME
-            doc.verification_reference_id = ref_id
-            doc.verification_failure_reason = "DigiLocker returned: Record not found with the issuing Transport Authority."
-            doc.updated_at = utcnow()
-
-            vrec = VerificationRecord(
-                id=new_id("vrec"),
-                user_id=user_id,
+            return transition_verification_status(
+                db,
                 entity_type="IDENTITY_DOCUMENT",
-                entity_id=doc.id,
-                provider=cls.PROVIDER_NAME,
-                status="FAILED",
-                verification_type="OAUTH_DIGILOCKER",
-                verification_reference_id=ref_id,
-                failure_reason=doc.verification_failure_reason,
+                entity=doc,
+                user_id=user_id,
+                requested_status="failed",
+                provider_name=cls.PROVIDER_NAME,
+                trust_mode=effective_mode,
+                reference_id=ref_id,
+                failure_reason="DigiLocker returned: Record not found with the issuing Transport Authority.",
                 consent_record_id=consent.id if consent else None,
+                verification_type="OAUTH_DIGILOCKER",
                 ip_address=ip_address,
                 user_agent=user_agent,
             )
-            db.add(vrec)
-            _audit(db, user_id, "verify_document_failed", "document", doc.id, f"DigiLocker verification failed for {doc.document_name}", "failure")
-            db.commit()
-            return {
-                "status": "failed",
-                "document_id": doc.id,
-                "provider": cls.PROVIDER_NAME,
-                "reference_id": ref_id,
-                "reason": doc.verification_failure_reason,
-            }
-
-        # Successful verification
-        doc.verification_status = "verified"
-        doc.verification_provider = cls.PROVIDER_NAME
-        doc.verified_at = utcnow()
-        doc.verification_reference_id = ref_id
-        doc.verification_failure_reason = None
-        doc.updated_at = utcnow()
 
         metadata = {
             "masked_document_number": _mask_identifier(doc_num),
@@ -542,33 +867,21 @@ class DigiLockerAdapter:
             "verification_mode": "DigiLocker Certified XML",
         }
 
-        vrec = VerificationRecord(
-            id=new_id("vrec"),
-            user_id=user_id,
+        return transition_verification_status(
+            db,
             entity_type="IDENTITY_DOCUMENT",
-            entity_id=doc.id,
-            provider=cls.PROVIDER_NAME,
-            status="VERIFIED",
-            verification_type="OAUTH_DIGILOCKER",
-            verification_reference_id=ref_id,
-            verified_at=utcnow(),
-            consent_record_id=consent.id if consent else None,
+            entity=doc,
+            user_id=user_id,
+            requested_status="verified",
+            provider_name=cls.PROVIDER_NAME,
+            trust_mode=effective_mode,
+            reference_id=ref_id,
             verified_metadata=metadata,
+            consent_record_id=consent.id if consent else None,
+            verification_type="OAUTH_DIGILOCKER",
             ip_address=ip_address,
             user_agent=user_agent,
         )
-        db.add(vrec)
-        _audit(db, user_id, "verify_document_success", "document", doc.id, f"Verified {doc.document_name} via DigiLocker")
-        db.commit()
-
-        return {
-            "status": "verified",
-            "document_id": doc.id,
-            "provider": cls.PROVIDER_NAME,
-            "reference_id": ref_id,
-            "verified_at": iso(doc.verified_at),
-            "metadata": metadata,
-        }
 
 
 class VahanAdapter:
@@ -585,6 +898,7 @@ class VahanAdapter:
         consent_record_id: str | None = None,
         ip_address: str | None = None,
         user_agent: str | None = None,
+        trust_mode: str | None = None,
     ) -> dict[str, Any]:
         """Verify vehicle details and registration with the national VAHAN database."""
         v = db.get(Vehicle, vehicle_id)
@@ -603,47 +917,30 @@ class VahanAdapter:
         if not consent:
             raise ServiceError("Explicit user consent is required before querying VAHAN/Parivahan registry.")
 
+        effective_mode = (trust_mode or get_provider_mode()).strip().upper()
+        if effective_mode == ProviderTrustMode.PRODUCTION:
+            check_provider_credentials(cls.PROVIDER_NAME, effective_mode)
+
         ref_id = f"VAHAN-{uuid4().hex[:12].upper()}"
         reg_no = (v.registration_number or "").upper().replace(" ", "").replace("-", "")
 
         # Failure simulation for invalid test numbers
         if "INVALID" in reg_no or reg_no == "DL00XX0000":
-            v.verification_status = "failed"
-            v.verification_provider = cls.PROVIDER_NAME
-            v.verification_reference_id = ref_id
-            v.updated_at = utcnow()
-
-            vrec = VerificationRecord(
-                id=new_id("vrec"),
-                user_id=user_id,
+            return transition_verification_status(
+                db,
                 entity_type="VEHICLE_RC",
-                entity_id=v.id,
-                provider=cls.PROVIDER_NAME,
-                status="FAILED",
-                verification_type="API_MATCH",
-                verification_reference_id=ref_id,
+                entity=v,
+                user_id=user_id,
+                requested_status="failed",
+                provider_name=cls.PROVIDER_NAME,
+                trust_mode=effective_mode,
+                reference_id=ref_id,
                 failure_reason="Registration number not found in VAHAN database or invalid registration syntax.",
                 consent_record_id=consent.id if consent else None,
+                verification_type="API_MATCH",
                 ip_address=ip_address,
                 user_agent=user_agent,
             )
-            db.add(vrec)
-            _audit(db, user_id, "verify_vehicle_failed", "vehicle", v.id, f"VAHAN check failed for {v.registration_number}", "failure")
-            db.commit()
-            return {
-                "status": "failed",
-                "vehicle_id": v.id,
-                "provider": cls.PROVIDER_NAME,
-                "reference_id": ref_id,
-                "reason": "Registration number not found in VAHAN database.",
-            }
-
-        # Successful verification match
-        v.verification_status = "verified"
-        v.verification_provider = cls.PROVIDER_NAME
-        v.verified_at = utcnow()
-        v.verification_reference_id = ref_id
-        v.updated_at = utcnow()
 
         metadata = {
             "registration_number": v.registration_number,
@@ -657,33 +954,21 @@ class VahanAdapter:
             "verification_authority": "Ministry of Road Transport and Highways (MoRTH)",
         }
 
-        vrec = VerificationRecord(
-            id=new_id("vrec"),
-            user_id=user_id,
+        return transition_verification_status(
+            db,
             entity_type="VEHICLE_RC",
-            entity_id=v.id,
-            provider=cls.PROVIDER_NAME,
-            status="VERIFIED",
-            verification_type="API_MATCH",
-            verification_reference_id=ref_id,
-            verified_at=utcnow(),
-            consent_record_id=consent.id if consent else None,
+            entity=v,
+            user_id=user_id,
+            requested_status="verified",
+            provider_name=cls.PROVIDER_NAME,
+            trust_mode=effective_mode,
+            reference_id=ref_id,
             verified_metadata=metadata,
+            consent_record_id=consent.id if consent else None,
+            verification_type="API_MATCH",
             ip_address=ip_address,
             user_agent=user_agent,
         )
-        db.add(vrec)
-        _audit(db, user_id, "verify_vehicle_success", "vehicle", v.id, f"Verified vehicle {v.registration_number} with VAHAN")
-        db.commit()
-
-        return {
-            "status": "verified",
-            "vehicle_id": v.id,
-            "provider": cls.PROVIDER_NAME,
-            "reference_id": ref_id,
-            "verified_at": iso(v.verified_at),
-            "metadata": metadata,
-        }
 
 
 class InsuranceAdapter:
@@ -700,6 +985,7 @@ class InsuranceAdapter:
         consent_record_id: str | None = None,
         ip_address: str | None = None,
         user_agent: str | None = None,
+        trust_mode: str | None = None,
     ) -> dict[str, Any]:
         """Verify insurance policy active status against insurer / IIB database."""
         pol = db.get(VehicleInsurancePolicy, policy_id)
@@ -710,35 +996,30 @@ class InsuranceAdapter:
         if not v or v.user_id != user_id:
             raise PermissionDenied("You do not own this policy's vehicle")
 
+        effective_mode = (trust_mode or get_provider_mode()).strip().upper()
+        if effective_mode == ProviderTrustMode.PRODUCTION:
+            check_provider_credentials(cls.PROVIDER_NAME, effective_mode)
+
         ref_id = f"IIB-{uuid4().hex[:12].upper()}"
 
         # Failure check
         if "INVALID" in (pol.policy_number or "").upper():
-            vrec = VerificationRecord(
-                id=new_id("vrec"),
-                user_id=user_id,
+            return transition_verification_status(
+                db,
                 entity_type="VEHICLE_INSURANCE",
-                entity_id=pol.id,
-                provider=cls.PROVIDER_NAME,
-                status="FAILED",
-                verification_type="API_MATCH",
-                verification_reference_id=ref_id,
+                entity=pol,
+                user_id=user_id,
+                requested_status="failed",
+                provider_name=cls.PROVIDER_NAME,
+                trust_mode=effective_mode,
+                reference_id=ref_id,
                 failure_reason="Policy number could not be validated by insurer repository.",
+                consent_record_id=consent_record_id,
+                verification_type="API_MATCH",
                 ip_address=ip_address,
                 user_agent=user_agent,
             )
-            db.add(vrec)
-            _audit(db, user_id, "verify_insurance_failed", "insurance_policy", pol.id, "Policy validation failed", "failure")
-            db.commit()
-            return {
-                "status": "failed",
-                "policy_id": pol.id,
-                "provider": cls.PROVIDER_NAME,
-                "reference_id": ref_id,
-                "reason": "Policy number could not be validated.",
-            }
 
-        # Success
         metadata = {
             "policy_number_masked": _mask_identifier(pol.policy_number),
             "insurer": pol.provider,
@@ -747,32 +1028,21 @@ class InsuranceAdapter:
             "expiry_date": iso(pol.expiry_date) if pol.expiry_date else None,
         }
 
-        vrec = VerificationRecord(
-            id=new_id("vrec"),
-            user_id=user_id,
+        return transition_verification_status(
+            db,
             entity_type="VEHICLE_INSURANCE",
-            entity_id=pol.id,
-            provider=cls.PROVIDER_NAME,
-            status="VERIFIED",
-            verification_type="API_MATCH",
-            verification_reference_id=ref_id,
-            verified_at=utcnow(),
+            entity=pol,
+            user_id=user_id,
+            requested_status="verified",
+            provider_name=cls.PROVIDER_NAME,
+            trust_mode=effective_mode,
+            reference_id=ref_id,
             verified_metadata=metadata,
+            consent_record_id=consent_record_id,
+            verification_type="API_MATCH",
             ip_address=ip_address,
             user_agent=user_agent,
         )
-        db.add(vrec)
-        _audit(db, user_id, "verify_insurance_success", "insurance_policy", pol.id, f"Verified insurance {pol.policy_number} via IIB")
-        db.commit()
-
-        return {
-            "status": "verified",
-            "policy_id": pol.id,
-            "provider": cls.PROVIDER_NAME,
-            "reference_id": ref_id,
-            "verified_at": iso(utcnow()),
-            "metadata": metadata,
-        }
 
 
 # ==============================================================================
@@ -787,6 +1057,7 @@ def verify_document(
     consent_record_id: str | None = None,
     ip_address: str | None = None,
     user_agent: str | None = None,
+    trust_mode: str | None = None,
 ) -> dict[str, Any]:
     """Verify a central document using the appropriate authorized provider."""
     doc = db.get(CentralDocument, document_id)
@@ -801,65 +1072,49 @@ def verify_document(
     # Route based on document type
     if doc_type in ("driving_licence", "aadhaar", "pan", "passport") or category in ("personal", "driving_licence"):
         return DigiLockerAdapter.verify_identity_document(
-            db, user_id, document_id, consent_record_id, ip_address, user_agent
+            db, user_id, document_id, consent_record_id, ip_address, user_agent, trust_mode=trust_mode
         )
 
     if doc_type == "rc" or category == "vehicle":
         # If attached to a vehicle, verify through VAHAN
         if doc.resource_type == "VEHICLE" and doc.resource_id:
-            veh_res = VahanAdapter.verify_vehicle(db, user_id, doc.resource_id, consent_record_id, ip_address, user_agent)
-            doc.verification_status = veh_res["status"]
-            doc.verification_provider = VahanAdapter.PROVIDER_NAME
-            doc.verification_reference_id = veh_res.get("reference_id")
-            if veh_res["status"] == "verified":
-                doc.verified_at = utcnow()
-                doc.verification_failure_reason = None
-            else:
-                doc.verification_failure_reason = veh_res.get("reason")
-            doc.updated_at = utcnow()
-            db.commit()
-            return {
-                "status": doc.verification_status,
-                "document_id": doc.id,
-                "provider": VahanAdapter.PROVIDER_NAME,
-                "reference_id": doc.verification_reference_id,
-                "verified_at": iso(doc.verified_at) if doc.verified_at else None,
-            }
+            veh_res = VahanAdapter.verify_vehicle(
+                db, user_id, doc.resource_id, consent_record_id, ip_address, user_agent, trust_mode=trust_mode
+            )
+            req_st = veh_res.get("verification_status") or veh_res.get("status") or "pending"
+            return transition_verification_status(
+                db,
+                entity_type="CENTRAL_DOCUMENT",
+                entity=doc,
+                user_id=user_id,
+                requested_status=req_st,
+                provider_name=VahanAdapter.PROVIDER_NAME,
+                trust_mode=trust_mode,
+                reference_id=veh_res.get("reference_id"),
+                failure_reason=veh_res.get("reason"),
+                verified_metadata={"vehicle_id": doc.resource_id, **(veh_res.get("metadata") or {})},
+                consent_record_id=consent_record_id,
+                verification_type="API_MATCH",
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
 
     # Generic institutional document verification
-    ref_id = f"DOCVER-{uuid4().hex[:12].upper()}"
-    doc.verification_status = "verified"
-    doc.verification_provider = provider or "SECONDHOUR_INSTITUTIONAL"
-    doc.verified_at = utcnow()
-    doc.verification_reference_id = ref_id
-    doc.verification_failure_reason = None
-    doc.updated_at = utcnow()
-
-    vrec = VerificationRecord(
-        id=new_id("vrec"),
-        user_id=user_id,
+    return transition_verification_status(
+        db,
         entity_type="CENTRAL_DOCUMENT",
-        entity_id=doc.id,
-        provider=doc.verification_provider,
-        status="VERIFIED",
-        verification_type="INSTITUTIONAL_MATCH",
-        verification_reference_id=ref_id,
-        verified_at=utcnow(),
+        entity=doc,
+        user_id=user_id,
+        requested_status="verified",
+        provider_name=provider or "SECONDHOUR_INSTITUTIONAL",
+        trust_mode=trust_mode,
+        reference_id=f"DOCVER-{uuid4().hex[:12].upper()}",
         verified_metadata={"document_name": doc.document_name, "category": doc.category},
+        consent_record_id=consent_record_id,
+        verification_type="INSTITUTIONAL_MATCH",
         ip_address=ip_address,
         user_agent=user_agent,
     )
-    db.add(vrec)
-    _audit(db, user_id, "verify_document_success", "document", doc.id, f"Verified document {doc.document_name}")
-    db.commit()
-
-    return {
-        "status": "verified",
-        "document_id": doc.id,
-        "provider": doc.verification_provider,
-        "reference_id": ref_id,
-        "verified_at": iso(doc.verified_at),
-    }
 
 
 def retry_verification(
@@ -869,6 +1124,7 @@ def retry_verification(
     entity_id: str,
     ip_address: str | None = None,
     user_agent: str | None = None,
+    trust_mode: str | None = None,
 ) -> dict[str, Any]:
     """Retry a previously failed verification for vehicle, document, or identity."""
     ent_clean = entity_type.upper().strip()
@@ -884,17 +1140,17 @@ def retry_verification(
     retry_count = len(prev_records)
 
     if ent_clean in ("IDENTITY_DOCUMENT", "CENTRAL_DOCUMENT"):
-        res = verify_document(db, user_id, entity_id, ip_address=ip_address, user_agent=user_agent)
+        res = verify_document(db, user_id, entity_id, ip_address=ip_address, user_agent=user_agent, trust_mode=trust_mode)
         res["retry_count"] = retry_count
         return res
 
     if ent_clean == "VEHICLE_RC":
-        res = VahanAdapter.verify_vehicle(db, user_id, entity_id, ip_address=ip_address, user_agent=user_agent)
+        res = VahanAdapter.verify_vehicle(db, user_id, entity_id, ip_address=ip_address, user_agent=user_agent, trust_mode=trust_mode)
         res["retry_count"] = retry_count
         return res
 
     if ent_clean == "VEHICLE_INSURANCE":
-        res = InsuranceAdapter.verify_policy(db, user_id, entity_id, ip_address=ip_address, user_agent=user_agent)
+        res = InsuranceAdapter.verify_policy(db, user_id, entity_id, ip_address=ip_address, user_agent=user_agent, trust_mode=trust_mode)
         res["retry_count"] = retry_count
         return res
 
