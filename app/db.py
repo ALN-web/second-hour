@@ -138,8 +138,10 @@ class User(Base):
     role_label: Mapped[str] = mapped_column(String, default="")
     email: Mapped[str | None] = mapped_column(String, nullable=True, default="")
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    pending_email: Mapped[str | None] = mapped_column(String, nullable=True)
     phone: Mapped[str | None] = mapped_column(String, nullable=True, default="")
     phone_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    pending_phone: Mapped[str | None] = mapped_column(String, nullable=True)
     date_of_birth: Mapped[str | None] = mapped_column(String, nullable=True)
     gender: Mapped[str | None] = mapped_column(String, nullable=True)
     profile_photo: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -952,6 +954,7 @@ class OtpVerification(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("otp"))
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     channel: Mapped[str] = mapped_column(String)                  # email | phone
+    purpose: Mapped[str] = mapped_column(String, default="email_verify") # email_verify | phone_verify | step_up | email_change | phone_change
     target: Mapped[str] = mapped_column(String)                   # email or phone
     otp_hash: Mapped[str] = mapped_column(String)                 # Salted SHA-256 hash
     salt: Mapped[str] = mapped_column(String)                     # Hex salt
